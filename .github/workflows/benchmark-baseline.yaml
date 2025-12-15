@@ -1,0 +1,162 @@
+##############################################################################
+#
+#  QuantLib-Risks Baseline Benchmark Workflow
+#
+#  Builds QuantLib with original XAD (no JIT/Forge) and runs the baseline
+#  benchmark for comparison with JIT-accelerated versions.
+#
+#  This uses:
+#  - Original XAD from auto-differentiation/xad
+#  - Original QuantLib-Risks-Cpp from auto-differentiation/QuantLib-Risks-Cpp
+#  - No Forge dependencies
+#
+#  Copyright (C) 2025 The QuantLib-Risks-Cpp-Forge Authors
+#
+#  SPDX-License-Identifier: AGPL-3.0-or-later
+#
+##############################################################################
+
+name: Benchmark (Baseline)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ql_repo:
+        description: QuantLib repository in <owner>/<repo> format
+        required: true
+        default: lballabio/QuantLib
+      ql_branch:
+        description: Branch or tag for QuantLib repository
+        required: true
+        default: master
+      xad_repo:
+        description: XAD repository in <owner>/<repo> format
+        required: true
+        default: auto-differentiation/xad
+      xad_branch:
+        description: Branch or tag for XAD repository
+        required: true
+        default: main
+      qlrisks_repo:
+        description: QuantLib-Risks-Cpp repository in <owner>/<repo> format
+        required: true
+        default: auto-differentiation/QuantLib-Risks-Cpp
+      qlrisks_branch:
+        description: Branch or tag for QuantLib-Risks-Cpp repository
+        required: true
+        default: main
+
+env:
+  ql_repo: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
+  ql_branch: ${{ github.event.inputs.ql_branch || 'master' }}
+  xad_repo: ${{ github.event.inputs.xad_repo || 'auto-differentiation/xad' }}
+  xad_branch: ${{ github.event.inputs.xad_branch || 'main' }}
+  qlrisks_repo: ${{ github.event.inputs.qlrisks_repo || 'auto-differentiation/QuantLib-Risks-Cpp' }}
+  qlrisks_branch: ${{ github.event.inputs.qlrisks_branch || 'main' }}
+
+jobs:
+  linux-baseline:
+    runs-on: ubuntu-latest
+    container: ghcr.io/lballabio/quantlib-devenv:rolling
+
+    name: Linux Baseline (Original XAD)
+
+    steps:
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ql_repo }}
+          ref: ${{ env.ql_branch }}
+          path: QuantLib
+
+      - name: Checkout XAD (Original)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.xad_repo }}
+          ref: ${{ env.xad_branch }}
+          path: xad
+
+      - name: Checkout QuantLib-Risks-Cpp (Original)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.qlrisks_repo }}
+          ref: ${{ env.qlrisks_branch }}
+          path: QuantLib-Risks-Cpp
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for baseline benchmark)
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Copy baseline benchmark to QuantLib-Risks-Cpp
+        run: |
+          # Copy benchmark files from Forge repo to original QuantLib-Risks-Cpp
+          cp QuantLib-Risks-Cpp-Forge/test-suite/swaption_benchmark_baseline.cpp \
+             QuantLib-Risks-Cpp/test-suite/
+          cp QuantLib-Risks-Cpp-Forge/test-suite/quantlibrisks_benchmark.cpp \
+             QuantLib-Risks-Cpp/test-suite/
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp \
+             QuantLib-Risks-Cpp/test-suite/
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp \
+             QuantLib-Risks-Cpp/test-suite/
+          # Add baseline benchmark to CMakeLists.txt
+          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
+
+# Baseline benchmark (no Forge/JIT) - patched in from QuantLib-Risks-Cpp-Forge
+add_executable(quantlib-risks-benchmark-baseline
+    quantlibrisks_benchmark.cpp
+    swaption_benchmark_baseline.cpp
+    utilities_xad.cpp
+    utilities_xad.hpp
+)
+set_target_properties(quantlib-risks-benchmark-baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")
+if (NOT Boost_USE_STATIC_LIBS)
+    target_compile_definitions(quantlib-risks-benchmark-baseline PRIVATE BOOST_ALL_DYN_LINK)
+endif()
+target_link_libraries(quantlib-risks-benchmark-baseline PRIVATE
+    QuantLib-Risks
+    ql_library
+    ${QL_THREAD_LIBRARIES})
+EOF
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-baseline
+          max-size: 650M
+
+      - name: Setup
+        run: |
+          apt-get update && apt-get install -y ninja-build ccache
+
+      - name: Configure QuantLib with XAD (Original)
+        run: |
+          cd QuantLib
+          mkdir build
+          cd build
+          cmake -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_BUILD_TEST_SUITE=ON \
+            ..
+
+      - name: Build
+        run: |
+          cd QuantLib/build
+          cmake --build . --target quantlib-risks-benchmark-baseline
+
+      - name: Run Baseline Benchmark
+        run: |
+          cd QuantLib/build
+          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-baseline --log_level=message
