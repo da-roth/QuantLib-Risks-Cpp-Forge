@@ -1,30 +1,18 @@
-##############################################################################
-#
-#  QuantLib-Risks-Cpp-Forge CI Workflow
-#
-#  Builds QuantLib with XAD-JIT (Forge-enabled) and runs the QuantLib-Risks
-#  test suite including Forge JIT tests.
-#
-#  This workflow:
-#  1. Builds Forge as a pre-built package (isolates AVX2 flags)
-#  2. Configures QuantLib with XAD-JIT + QuantLib-Risks-Cpp-Forge
-#  3. Runs the quantlib-risks-test-suite with Forge tests enabled
-#
-#  Copyright (C) 2025 The QuantLib-Risks-Cpp-Forge Authors
-#
-#  SPDX-License-Identifier: AGPL-3.0-or-later
-#
-##############################################################################
-
+# Workflow to run against the corresponding QuantLib release,
+# testing if the build and tests are working fine
+# Note: In addition to pushes/pull requests, this workflow 
+# can also be executed manually, and the repositories / branches 
+# for QuantLib and XAD can be provided in this case.
 name: CI
-
-on:
+on: 
+  repository_dispatch:
+    types: [xad-ci-trigger]
   push:
   pull_request:
   workflow_dispatch:
     inputs:
       ql_repo:
-        description: QuantLib repository in <owner>/<repo> format
+        description: Quantlib repository in <owner>/<repo> format
         required: true
         default: lballabio/QuantLib
       ql_branch:
@@ -32,154 +20,347 @@ on:
         required: true
         default: master
       xad_repo:
-        description: XAD-JIT repository in <owner>/<repo> format
+        description: XAD repository in <owner>/<repo> format
         required: true
-        default: da-roth/xad-jit
+        default: auto-differentiation/xad
       xad_branch:
-        description: Branch or tag for XAD-JIT repository
+        description: Branch or tag for XAD repository
         required: true
         default: main
-      forge_repo:
-        description: Forge repository in <owner>/<repo> format
-        required: true
-        default: da-roth/forge
-      forge_branch:
-        description: Branch or tag for Forge repository
-        required: true
-        default: main
-
+  schedule:
+    - cron: '02 5 * * *'  # 5:02 every day
 env:
   ql_repo: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
   ql_branch: ${{ github.event.inputs.ql_branch || 'master' }}
-  xad_repo: ${{ github.event.inputs.xad_repo || 'da-roth/xad-jit' }}
+  xad_repo: ${{ github.event.inputs.xad_repo || 'auto-differentiation/xad' }}
   xad_branch: ${{ github.event.inputs.xad_branch || 'main' }}
-  forge_repo: ${{ github.event.inputs.forge_repo || 'da-roth/forge' }}
-  forge_branch: ${{ github.event.inputs.forge_branch || 'main' }}
-
 jobs:
-  linux-forge:
+
+  xad-linux:
     strategy:
       fail-fast: false
       matrix:
-        build_type: ["Release", "Debug"]
-        capi: [off, on]
+        disable_aad: ["ON", "OFF"]
+        cxx: ["17", "20"]
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
-
-    name: Linux ${{ matrix.build_type }} (${{ matrix.capi == 'on' && 'C API' || 'C++ API' }})
-
     steps:
-      - name: Checkout QuantLib
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.ql_repo }}
-          ref: ${{ env.ql_branch }}
-          path: QuantLib
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.ql_repo }}
+        ref: ${{ env.ql_branch }}
+        path: QuantLib
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.xad_repo }}
+        ref: ${{ env.xad_branch }}
+        path: xad
+    - uses: actions/checkout@v4
+      with:
+        path: QuantLib-Risks-Cpp
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.12
+      with:
+        key: linux-${{ matrix.disable_aad }}
+        max-size: 650M
+    - name: Setup
+      run: |
+        apt-get update \
+        && apt install -y ccache ninja-build
+    - name: Configure
+      run: |
+        rm -rf ${{ github.workspace }}/install
+        cd QuantLib
+        mkdir build
+        cd build
+        cmake -G Ninja -DBOOST_ROOT=/usr \
+          -DCMAKE_CXX_STANDARD=${{ matrix.cxx }} \
+          -DQLRISKS_DISABLE_AAD=${{ matrix.disable_aad }} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp" \
+          -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+          -DQL_NULL_AS_FUNCTIONS=ON \
+          -DCMAKE_INSTALL_PREFIX=$(pwd)/../../install \
+          ..
+    - name: Compile
+      run: |
+        cd QuantLib/build
+        cmake --build .
+    - name: Test QuantLib
+      run: |
+        cd QuantLib/build
+        ./test-suite/quantlib-test-suite --log_level=message    
+    - name: Test QuantLib-Risks
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        cd QuantLib/build
+        ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+    - name: Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        cd QuantLib/build
+        cmake --install .
+    - name: Test Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        mkdir installtest
+        cp QuantLib-Risks-Cpp/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
+        cd installtest
+        echo "cmake_minimum_required(VERSION 3.15.2)" > CMakeLists.txt
+        echo "project(QlTest LANGUAGES CXX)" >> CMakeLists.txt
+        echo "find_package(QuantLib-Risks REQUIRED)" >> CMakeLists.txt
+        echo "add_executable(AdjointSwapXAD AdjointSwapXAD.cpp)" >> CMakeLists.txt
+        echo "target_link_libraries(AdjointSwapXAD PRIVATE QuantLib::QuantLib)" >> CMakeLists.txt
+        echo "target_compile_features(AdjointSwapXAD PUBLIC cxx_std_17)" >> CMakeLists.txt
+        mkdir build
+        cd build
+        cmake -G Ninja -DBOOST_ROOT=/usr \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
+          ..
+        cmake --build .
+        ./AdjointSwapXAD
 
-      - name: Checkout XAD-JIT
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.xad_repo }}
-          ref: ${{ env.xad_branch }}
-          path: xad-jit
 
-      - name: Checkout Forge
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.forge_repo }}
-          ref: ${{ env.forge_branch }}
-          path: forge
 
-      - name: Checkout QuantLib-Risks-Cpp-Forge
-        uses: actions/checkout@v4
-        with:
-          path: QuantLib-Risks-Cpp-Forge
 
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2.12
-        with:
-          key: linux-forge-${{ matrix.build_type }}-${{ matrix.capi }}
-          max-size: 650M
+  xad-win:
+    strategy:
+      fail-fast: false
+      matrix:
+        disable_aad: ["ON", "OFF"]
+        cxx: ["17", "20"]
+    runs-on: windows-2022
+    env:
+      vsvarsall: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ env.ql_repo }}
+        ref: ${{ env.ql_branch }}
+        path: QuantLib
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ env.xad_repo }}
+        ref: ${{ env.xad_branch }}
+        path: xad
+    - uses: actions/checkout@v3
+      with:
+        path: QuantLib-Risks-Cpp
+    - name: sccache
+      uses: hendrikmuhs/ccache-action@v1.2.12
+      with:
+        key: windows-${{ matrix.disable_aad }}
+        variant: sccache
+        max-size: 650M
+    - name: Setup
+      run: |
+        choco install -y ninja
+        $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.84.0/boost_1_84_0-msvc-14.3-64.exe"
+        (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+        Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+    - name: Configure
+      env:
+        BOOST_ROOT: C:\local\boost
+      shell: cmd
+      run: |
+        cd QuantLib
+        mkdir build
+        cd build
+        call "${{ env.vsvarsall }}" amd64
+        cmake .. -G Ninja -DQLRISKS_DISABLE_AAD=${{ matrix.disable_aad }} ^
+        -DCMAKE_CXX_STANDARD=${{ matrix.cxx }} ^
+        -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+        -DCMAKE_BUILD_TYPE=Release ^
+        -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp" ^
+        -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+        -DQL_NULL_AS_FUNCTIONS=ON ^
+        -DXAD_STATIC_MSVC_RUNTIME=ON ^
+        -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+    - name: Build
+      shell: cmd
+      run: |
+        cd QuantLib\build
+        call "${{ env.vsvarsall }}" amd64
+        cmake --build .
+    - name: Test QuantLib
+      shell: cmd
+      run: |
+        cd QuantLib\build
+        call "${{ env.vsvarsall }}" amd64
+        .\test-suite\quantlib-test-suite --log_level=message
+    - name: Test QuantLib-Risks
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      shell: cmd
+      run: |
+        cd QuantLib\build
+        call "${{ env.vsvarsall }}" amd64
+        .\QuantLib-Risks-Cpp\test-suite\quantlib-risks-test-suite --log_level=message
+    - name: Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        cd QuantLib/build
+        cmake --install .
+    - name: Test Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      env:
+        BOOST_ROOT: C:\local\boost
+      shell: cmd
+      run: |
+        mkdir installtest
+        copy QuantLib-Risks-Cpp\Examples\AdjointSwap\AdjointSwapXAD.cpp installtest
+        cd installtest
+        echo cmake_minimum_required(VERSION 3.15.2) > CMakeLists.txt
+        echo project(QlTest LANGUAGES CXX) >> CMakeLists.txt
+        echo find_package(QuantLib-Risks REQUIRED) >> CMakeLists.txt
+        echo add_executable(AdjointSwapXAD AdjointSwapXAD.cpp) >> CMakeLists.txt
+        echo target_link_libraries(AdjointSwapXAD PRIVATE QuantLib::QuantLib) >> CMakeLists.txt
+        echo set_target_properties(AdjointSwapXAD PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded) >> CMakeLists.txt
+        echo target_compile_features(AdjointSwapXAD PUBLIC cxx_std_17) >> CMakeLists.txt
+        mkdir build
+        cd build
+        call "${{ env.vsvarsall }}" amd64
+        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install ..
+        cmake --build .
+        AdjointSwapXAD.exe
 
-      - name: Setup
-        run: |
-          apt-get update && apt-get install -y ninja-build ccache
 
-      - name: Build Forge (C++ API)
-        if: matrix.capi == 'off'
-        run: |
-          cd forge
-          cmake -B build -S tools/packaging \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
-          cmake --build build --config ${{ matrix.build_type }}
-          cmake --install build --config ${{ matrix.build_type }}
+  xad-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        disable_aad: ["ON", "OFF"]
+        cxx: ["17", "20"]
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.ql_repo }}
+        ref: ${{ env.ql_branch }}
+        path: QuantLib
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.xad_repo }}
+        ref: ${{ env.xad_branch }}
+        path: xad
+    - uses: actions/checkout@v4
+      with:
+        path: QuantLib-Risks-Cpp
+    - name: Setup
+      run: |
+        brew install boost
+        brew install ninja
+        brew install ccache
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.12
+      with:
+        key: macos-${{ matrix.disable_aad }}
+        max-size: 650M
+    - name: Configure
+      run: |
+        cd QuantLib
+        mkdir build
+        cd build
+        cmake -G Ninja -DBOOST_ROOT=/usr \
+        -DCMAKE_CXX_STANDARD=${{ matrix.cxx }} \
+          -DQLRISKS_DISABLE_AAD=${{ matrix.disable_aad }} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp" \
+          -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+          -DQL_NULL_AS_FUNCTIONS=ON \
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
+          ..
+    - name: Compile
+      run: |
+        cd QuantLib/build
+        cmake --build .
+    - name: Test QuantLib
+      run: |
+        cd QuantLib/build
+        ./test-suite/quantlib-test-suite --log_level=message    
+    - name: Test QuantLib-Risks
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        cd QuantLib/build
+        ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+    - name: Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        cd QuantLib/build
+        cmake --install .
+    - name: Test Install
+      if: ${{ matrix.disable_aad == 'OFF' }}
+      run: |
+        mkdir installtest
+        cp QuantLib-Risks-Cpp/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
+        cd installtest
+        echo "cmake_minimum_required(VERSION 3.15.2)" > CMakeLists.txt
+        echo "project(QlTest LANGUAGES CXX)" >> CMakeLists.txt
+        echo "find_package(QuantLib-Risks REQUIRED)" >> CMakeLists.txt
+        echo "add_executable(AdjointSwapXAD AdjointSwapXAD.cpp)" >> CMakeLists.txt
+        echo "target_link_libraries(AdjointSwapXAD PRIVATE QuantLib::QuantLib)" >> CMakeLists.txt
+        echo "target_compile_features(AdjointSwapXAD PUBLIC cxx_std_17)" >> CMakeLists.txt
+        mkdir build
+        cd build
+        cmake -G Ninja -DBOOST_ROOT=/usr \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install \
+          ..
+        cmake --build .
+        ./AdjointSwapXAD
 
-      - name: Build Forge (C API)
-        if: matrix.capi == 'on'
-        run: |
-          cd forge
-          cmake -B build -S tools/capi \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
-          cmake --build build --config ${{ matrix.build_type }}
-          cmake --install build --config ${{ matrix.build_type }}
-
-      - name: Configure QuantLib with XAD-JIT + Forge (C++ API)
-        if: matrix.capi == 'off'
-        run: |
-          cd QuantLib
-          mkdir build
-          cd build
-          cmake -G Ninja -DBOOST_ROOT=/usr \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DXAD_WARNINGS_PARANOID=OFF \
-            -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
-            -DQL_NULL_AS_FUNCTIONS=ON \
-            -DQL_BUILD_TEST_SUITE=OFF \
-            -DQL_BUILD_EXAMPLES=OFF \
-            -DQL_BUILD_BENCHMARK=OFF \
-            -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_BUILD_TEST_SUITE=ON \
-            -DQLRISKS_ENABLE_FORGE_TESTS=ON \
-            ..
-
-      - name: Configure QuantLib with XAD-JIT + Forge (C API)
-        if: matrix.capi == 'on'
-        run: |
-          cd QuantLib
-          mkdir build
-          cd build
-          cmake -G Ninja -DBOOST_ROOT=/usr \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DXAD_WARNINGS_PARANOID=OFF \
-            -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
-            -DQL_NULL_AS_FUNCTIONS=ON \
-            -DQL_BUILD_TEST_SUITE=OFF \
-            -DQL_BUILD_EXAMPLES=OFF \
-            -DQL_BUILD_BENCHMARK=OFF \
-            -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_USE_FORGE_CAPI=ON \
-            -DQLRISKS_BUILD_TEST_SUITE=ON \
-            -DQLRISKS_ENABLE_FORGE_TESTS=ON \
-            ..
-
-      - name: Build
-        run: |
-          cd QuantLib/build
-          cmake --build .
-
-      - name: Test QuantLib-Risks
-        run: |
-          cd QuantLib/build
-          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-test-suite --log_level=message
+  xad-linux-std-classes:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    container: ghcr.io/lballabio/quantlib-devenv:rolling
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.ql_repo }}
+        ref: ${{ env.ql_branch }}
+        path: QuantLib
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.xad_repo }}
+        ref: ${{ env.xad_branch }}
+        path: xad
+    - uses: actions/checkout@v4
+      with:
+        path: QuantLib-Risks-Cpp
+    - name: Setup
+      run: |
+        apt-get update \
+        && apt install -y ccache ninja-build \
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.12
+      with:
+        key: linux-std-classes
+        max-size: 650M
+    - name: Configure
+      run: |
+        cd QuantLib
+        mkdir build
+        cd build
+        cmake -G Ninja -DBOOST_ROOT=/usr \
+        -DQL_USE_STD_CLASSES=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp" \
+        -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+        -DQL_NULL_AS_FUNCTIONS=ON \
+        ..
+    - name: Compile
+      run: |
+        cd QuantLib/build
+        cmake --build .
+    - name: Test QuantLib
+      run: |
+        cd QuantLib/build
+        ./test-suite/quantlib-test-suite --log_level=message    
+    - name: Test QuantLib-Risks
+      run: |
+        cd QuantLib/build
+        ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
