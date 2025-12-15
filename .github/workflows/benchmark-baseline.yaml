@@ -102,24 +102,22 @@ jobs:
           cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp \
              QuantLib-Risks-Cpp/test-suite/
           # Add baseline benchmark to CMakeLists.txt
-          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
-
-# Baseline benchmark (no Forge/JIT) - patched in from QuantLib-Risks-Cpp-Forge
-add_executable(quantlib-risks-benchmark-baseline
-    quantlibrisks_benchmark.cpp
-    swaption_benchmark_baseline.cpp
-    utilities_xad.cpp
-    utilities_xad.hpp
-)
-set_target_properties(quantlib-risks-benchmark-baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")
-if (NOT Boost_USE_STATIC_LIBS)
-    target_compile_definitions(quantlib-risks-benchmark-baseline PRIVATE BOOST_ALL_DYN_LINK)
-endif()
-target_link_libraries(quantlib-risks-benchmark-baseline PRIVATE
-    QuantLib-Risks
-    ql_library
-    ${QL_THREAD_LIBRARIES})
-EOF
+          echo "" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "# Baseline benchmark (no Forge/JIT) - patched in from QuantLib-Risks-Cpp-Forge" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "add_executable(quantlib-risks-benchmark-baseline" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    quantlibrisks_benchmark.cpp" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    swaption_benchmark_baseline.cpp" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    utilities_xad.cpp" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    utilities_xad.hpp" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo ")" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo 'set_target_properties(quantlib-risks-benchmark-baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")' >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "if (NOT Boost_USE_STATIC_LIBS)" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    target_compile_definitions(quantlib-risks-benchmark-baseline PRIVATE BOOST_ALL_DYN_LINK)" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "endif()" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "target_link_libraries(quantlib-risks-benchmark-baseline PRIVATE" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    QuantLib-Risks" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo "    ql_library" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
+          echo '    ${QL_THREAD_LIBRARIES})' >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.12
