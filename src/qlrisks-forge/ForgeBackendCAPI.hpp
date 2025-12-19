@@ -34,7 +34,7 @@ namespace forge
  * enabling binary compatibility with precompiled Forge packages
  * built with different compilers.
  */
-class ForgeBackendCAPI : public xad::IJITBackend
+class ForgeBackendCAPI : public xad::JITBackend
 {
   public:
     // Constructor with optional graph optimizations (default: disabled)

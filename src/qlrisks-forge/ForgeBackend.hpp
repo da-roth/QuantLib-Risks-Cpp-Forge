@@ -45,7 +45,7 @@ namespace forge
  * Uses Forge's JIT compiler for fast forward pass execution.
  * Falls back to JITGraphInterpreter for adjoint computation.
  */
-class ForgeBackend : public xad::IJITBackend
+class ForgeBackend : public xad::JITBackend
 {
   public:
     // Constructor with optional graph optimizations (default: disabled)
