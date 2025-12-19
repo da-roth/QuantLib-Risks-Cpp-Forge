@@ -93,7 +93,8 @@ BOOST_AUTO_TEST_CASE(testForgeBackendLinearFunction)
     // Compute with ForgeBackend (native JIT)
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
-        auto jit = xad::JITCompiler<double, 1>::withBackend<qlrisks::forge::ForgeBackend>();
+        xad::JITCompiler<double, 1> jit(
+            std::make_unique<qlrisks::forge::ForgeBackend>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -159,7 +160,8 @@ BOOST_AUTO_TEST_CASE(testForgeBackendMathFunctions)
     // Compute with ForgeBackend
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
-        auto jit = xad::JITCompiler<double, 1>::withBackend<qlrisks::forge::ForgeBackend>();
+        xad::JITCompiler<double, 1> jit(
+            std::make_unique<qlrisks::forge::ForgeBackend>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -225,7 +227,8 @@ BOOST_AUTO_TEST_CASE(testForgeBackendABoolBranching)
     // Compute with ForgeBackend
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
-        auto jit = xad::JITCompiler<double, 1>::withBackend<qlrisks::forge::ForgeBackend>();
+        xad::JITCompiler<double, 1> jit(
+            std::make_unique<qlrisks::forge::ForgeBackend>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -267,7 +270,8 @@ BOOST_AUTO_TEST_CASE(testForgeBackendBasicInstantiation)
     BOOST_TEST_MESSAGE("Testing ForgeBackend basic instantiation...");
     std::cout << "\n=== ForgeBackend Basic Test: f(x) = x^2 + 3x ===" << std::endl;
 
-    auto jit = xad::JITCompiler<double, 1>::withBackend<qlrisks::forge::ForgeBackend>();
+    xad::JITCompiler<double, 1> jit(
+        std::make_unique<qlrisks::forge::ForgeBackend>());
 
     xad::AD x(2.0);
     jit.registerInput(x);
