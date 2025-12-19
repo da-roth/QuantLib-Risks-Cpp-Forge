@@ -124,12 +124,12 @@ class ForgeBackendAVX_CAPI
         inputIds_.clear();
         for (std::size_t i = 0; i < jitGraph.nodeCount(); ++i)
         {
-            ForgeOpCode op = static_cast<ForgeOpCode>(jitGraph.opcodes[i]);
-            uint32_t a = jitGraph.operand_a[i];
-            uint32_t b = jitGraph.operand_b[i];
-            uint32_t c = jitGraph.operand_c[i];
-            double imm = jitGraph.immediates[i];
-            int isActive = (jitGraph.flags[i] & xad::JITNodeFlags::IsActive) != 0 ? 1 : 0;
+            ForgeOpCode op = static_cast<ForgeOpCode>(jitGraph.nodes[i].op);
+            uint32_t a = jitGraph.nodes[i].a;
+            uint32_t b = jitGraph.nodes[i].b;
+            uint32_t c = jitGraph.nodes[i].c;
+            double imm = jitGraph.nodes[i].imm;
+            int isActive = (jitGraph.nodes[i].flags & xad::JITNodeFlags::IsActive) != 0 ? 1 : 0;
             int needsGrad = 0;
 
             uint32_t nodeId = forge_graph_add_node(graph_, op, a, b, c, imm, isActive, needsGrad);

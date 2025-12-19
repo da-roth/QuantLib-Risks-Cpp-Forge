@@ -99,14 +99,14 @@ class ForgeBackendAVX
         for (std::size_t i = 0; i < jitGraph.nodeCount(); ++i)
         {
             ::forge::Node n;
-            n.op = static_cast<::forge::OpCode>(jitGraph.opcodes[i]);
+            n.op = static_cast<::forge::OpCode>(jitGraph.nodes[i].op);
             n.dst = static_cast<uint32_t>(i);
-            n.a = jitGraph.operand_a[i];
-            n.b = jitGraph.operand_b[i];
-            n.c = jitGraph.operand_c[i];
-            n.imm = jitGraph.immediates[i];
-            n.isActive = (jitGraph.flags[i] & xad::JITNodeFlags::IsActive) != 0;
-            n.isDead = (jitGraph.flags[i] & xad::JITNodeFlags::IsDead) != 0;
+            n.a = jitGraph.nodes[i].a;
+            n.b = jitGraph.nodes[i].b;
+            n.c = jitGraph.nodes[i].c;
+            n.imm = jitGraph.nodes[i].imm;
+            n.isActive = (jitGraph.nodes[i].flags & xad::JITNodeFlags::IsActive) != 0;
+            n.isDead = false;
             n.needsGradient = false;  // Will be set in propagation pass
             forgeGraph_.nodes.push_back(n);
         }

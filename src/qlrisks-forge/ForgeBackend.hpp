@@ -77,14 +77,14 @@ class ForgeBackend : public xad::JITBackend
         for (std::size_t i = 0; i < graph.nodeCount(); ++i)
         {
             ::forge::Node n;
-            n.op = static_cast<::forge::OpCode>(graph.opcodes[i]);
+            n.op = static_cast<::forge::OpCode>(graph.nodes[i].op);
             n.dst = static_cast<uint32_t>(i);
-            n.a = graph.operand_a[i];
-            n.b = graph.operand_b[i];
-            n.c = graph.operand_c[i];
-            n.imm = graph.immediates[i];
-            n.isActive = (graph.flags[i] & xad::JITNodeFlags::IsActive) != 0;
-            n.isDead = (graph.flags[i] & xad::JITNodeFlags::IsDead) != 0;
+            n.a = graph.nodes[i].a;
+            n.b = graph.nodes[i].b;
+            n.c = graph.nodes[i].c;
+            n.imm = graph.nodes[i].imm;
+            n.isActive = (graph.nodes[i].flags & xad::JITNodeFlags::IsActive) != 0;
+            n.isDead = false;
             n.needsGradient = false;  // Will be set in propagation pass
             forgeGraph_.nodes.push_back(n);
         }
