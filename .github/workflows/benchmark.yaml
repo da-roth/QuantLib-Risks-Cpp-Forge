@@ -26,11 +26,11 @@ on:
         required: true
         default: master
       xad_repo:
-        description: XAD repository in <owner>/<repo> format
+        description: XAD-JIT repository in <owner>/<repo> format
         required: true
-        default: auto-differentiation/xad
+        default: da-roth/xad-jit
       xad_branch:
-        description: Branch or tag for XAD repository
+        description: Branch or tag for XAD-JIT repository
         required: true
         default: main
       forge_repo:
@@ -53,7 +53,7 @@ on:
 env:
   ql_repo: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
   ql_branch: ${{ github.event.inputs.ql_branch || 'master' }}
-  xad_repo: ${{ github.event.inputs.xad_repo || 'auto-differentiation/xad' }}
+  xad_repo: ${{ github.event.inputs.xad_repo || 'da-roth/xad-jit' }}
   xad_branch: ${{ github.event.inputs.xad_branch || 'main' }}
   forge_repo: ${{ github.event.inputs.forge_repo || 'da-roth/forge' }}
   forge_branch: ${{ github.event.inputs.forge_branch || 'main' }}
@@ -79,12 +79,12 @@ jobs:
           ref: ${{ env.ql_branch }}
           path: QuantLib
 
-      - name: Checkout XAD
+      - name: Checkout XAD-JIT
         uses: actions/checkout@v4
         with:
           repository: ${{ env.xad_repo }}
           ref: ${{ env.xad_branch }}
-          path: xad
+          path: xad-jit
 
       - name: Checkout Forge
         uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DXAD_WARNINGS_PARANOID=OFF \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -174,7 +174,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DXAD_WARNINGS_PARANOID=OFF \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
