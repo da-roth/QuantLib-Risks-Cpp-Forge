@@ -120,7 +120,7 @@ jobs:
         if: matrix.capi == 'on'
         run: |
           cd forge
-          cmake -B build -S tools/capi \
+          cmake -B build -S api/c \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
