@@ -23,6 +23,7 @@
 ##############################################################################
 
 option(QLRISKS_DISABLE_AAD "Disable using XAD for QuantLib's Real, allowing to run samples with double" OFF)
+option(QLRISKS_ENABLE_FORGE "Enable Forge JIT backend via xad-forge" OFF)
 option(QLRISKS_USE_FORGE_CAPI "Use Forge C API instead of C++ API for binary compatibility" OFF)
 
 add_subdirectory(ql)
@@ -32,122 +33,49 @@ endif()
 add_subdirectory(Examples)
 
 ##############################################################################
-# QLRisks-Forge interface library (ForgeBackend adapter)
+# QLRisks-Forge integration via xad-forge
 # NOTE: This must be defined BEFORE test-suite so tests can link to it
 ##############################################################################
 
-# Find Forge - either as a subdirectory target or as a pre-built package
-# Pre-built package is PREFERRED because it isolates Forge's AVX2 compiler flags
-# from QuantLib/XAD, preventing ODR violations and ABI incompatibilities.
-message(STATUS "QLRisks-Forge: Looking for Forge...")
+if(QLRISKS_ENABLE_FORGE)
+    message(STATUS "QLRisks-Forge: Looking for xad-forge...")
 
-set(FORGE_FOUND FALSE)
+    # Pass through the C API option to xad-forge
+    set(XAD_FORGE_USE_CAPI ${QLRISKS_USE_FORGE_CAPI} CACHE BOOL "" FORCE)
 
-if(QLRISKS_USE_FORGE_CAPI)
-    ##########################################################################
-    # C API Mode: Use forge_capi shared library for binary compatibility
-    ##########################################################################
-    message(STATUS "QLRisks-Forge: Using C API mode for binary compatibility")
-
-    # Option 1: Check if forge_capi was added as subdirectory
-    if(TARGET forge_capi)
-        message(STATUS "QLRisks-Forge: Found forge_capi target (subdirectory mode)")
-        set(FORGE_FOUND TRUE)
-        set(FORGE_TARGET forge_capi)
-        # Get the capi directory for headers
-        get_target_property(FORGE_CAPI_SOURCE_DIR forge_capi SOURCE_DIR)
+    # Option 1: Check if xad-forge was added as subdirectory
+    if(TARGET xad-forge)
+        message(STATUS "QLRisks-Forge: Found xad-forge target (subdirectory mode)")
+        set(XAD_FORGE_FOUND TRUE)
     endif()
 
-    # Option 2: Try find_package for pre-built ForgeCAPI
-    if(NOT FORGE_FOUND)
-        find_package(ForgeCAPI CONFIG QUIET)
-        if(ForgeCAPI_FOUND)
-            message(STATUS "QLRisks-Forge: Found ForgeCAPI package (pre-built mode)")
-            set(FORGE_FOUND TRUE)
-            set(FORGE_TARGET Forge::forge_capi)
+    # Option 2: Try find_package for pre-built xad-forge
+    if(NOT XAD_FORGE_FOUND)
+        find_package(xad-forge CONFIG QUIET)
+        if(xad-forge_FOUND)
+            message(STATUS "QLRisks-Forge: Found xad-forge package (pre-built mode)")
+            set(XAD_FORGE_FOUND TRUE)
         endif()
     endif()
 
-    if(FORGE_FOUND)
+    if(XAD_FORGE_FOUND)
+        # Create qlrisks-forge as an alias/wrapper for backward compatibility
         add_library(qlrisks-forge INTERFACE)
         add_library(QLRisks::forge ALIAS qlrisks-forge)
 
-        target_include_directories(qlrisks-forge INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-        )
-
-        # Add C API header directory for subdirectory mode
-        if(FORGE_CAPI_SOURCE_DIR)
-            target_include_directories(qlrisks-forge INTERFACE
-                $<BUILD_INTERFACE:${FORGE_CAPI_SOURCE_DIR}>
-            )
-        endif()
-
-        target_compile_definitions(qlrisks-forge INTERFACE QLRISKS_USE_FORGE_CAPI=1)
-
         target_link_libraries(qlrisks-forge INTERFACE
-            XAD::xad
-            ${FORGE_TARGET}
+            XADForge::xad-forge
         )
 
-        message(STATUS "QLRisks-Forge: Configured with C API target ${FORGE_TARGET}")
+        # Add compatibility header that aliases xad::forge -> qlrisks::forge
+        target_compile_definitions(qlrisks-forge INTERFACE QLRISKS_HAS_FORGE=1)
+
+        message(STATUS "QLRisks-Forge: Configured with xad-forge")
     else()
-        message(STATUS "QLRisks-Forge: forge_capi not found - ForgeBackend will not be available")
-        message(STATUS "QLRisks-Forge: To enable C API mode, add forge/tools/capi as subdirectory")
-    endif()
-
-else()
-    ##########################################################################
-    # C++ API Mode: Use original Forge library (requires matching compiler)
-    ##########################################################################
-
-    # Option 1: Check if forge was added via QL_EXTERNAL_SUBDIRECTORIES (legacy)
-    if(TARGET forge)
-        message(STATUS "QLRisks-Forge: Found forge target (subdirectory mode)")
-        set(FORGE_FOUND TRUE)
-        set(FORGE_TARGET forge)
-    endif()
-
-    # Option 2: Try find_package for pre-built Forge (preferred)
-    if(NOT FORGE_FOUND)
-        find_package(Forge CONFIG QUIET)
-        if(Forge_FOUND)
-            message(STATUS "QLRisks-Forge: Found Forge package (pre-built mode) version ${Forge_VERSION}")
-            set(FORGE_FOUND TRUE)
-            set(FORGE_TARGET Forge::forge)
-        endif()
-    endif()
-
-    if(FORGE_FOUND)
-        add_library(qlrisks-forge INTERFACE)
-        add_library(QLRisks::forge ALIAS qlrisks-forge)
-
-        target_include_directories(qlrisks-forge INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-        )
-
-        # For subdirectory mode, add Forge source directories
-        if(TARGET forge)
-            get_target_property(FORGE_SOURCE_DIR forge SOURCE_DIR)
-            if(FORGE_SOURCE_DIR)
-                target_include_directories(qlrisks-forge INTERFACE
-                    $<BUILD_INTERFACE:${FORGE_SOURCE_DIR}/src>
-                    $<BUILD_INTERFACE:${FORGE_SOURCE_DIR}/tools>
-                )
-            endif()
-        endif()
-
-        target_link_libraries(qlrisks-forge INTERFACE
-            XAD::xad
-            ${FORGE_TARGET}
-        )
-
-        message(STATUS "QLRisks-Forge: Configured with C++ API target ${FORGE_TARGET}")
-    else()
-        message(STATUS "QLRisks-Forge: Forge not found - ForgeBackend will not be available")
+        message(STATUS "QLRisks-Forge: xad-forge not found - ForgeBackend will not be available")
         message(STATUS "QLRisks-Forge: To enable, either:")
-        message(STATUS "  1. Add forge to QL_EXTERNAL_SUBDIRECTORIES (not recommended)")
-        message(STATUS "  2. Set CMAKE_PREFIX_PATH to pre-built Forge installation (recommended)")
+        message(STATUS "  1. Add xad-forge as subdirectory")
+        message(STATUS "  2. Set CMAKE_PREFIX_PATH to xad-forge installation")
     endif()
 endif()
 
