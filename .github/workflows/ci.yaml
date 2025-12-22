@@ -47,6 +47,14 @@ on:
         description: Branch or tag for Forge repository
         required: true
         default: main
+      xad_forge_repo:
+        description: xad-forge repository in <owner>/<repo> format
+        required: true
+        default: da-roth/xad-forge
+      xad_forge_branch:
+        description: Branch or tag for xad-forge repository
+        required: true
+        default: main
 
 env:
   ql_repo: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
@@ -55,6 +63,8 @@ env:
   xad_branch: ${{ github.event.inputs.xad_branch || 'main' }}
   forge_repo: ${{ github.event.inputs.forge_repo || 'da-roth/forge' }}
   forge_branch: ${{ github.event.inputs.forge_branch || 'main' }}
+  xad_forge_repo: ${{ github.event.inputs.xad_forge_repo || 'da-roth/xad-forge' }}
+  xad_forge_branch: ${{ github.event.inputs.xad_forge_branch || 'main' }}
 
 jobs:
   linux-forge:
@@ -89,6 +99,13 @@ jobs:
           repository: ${{ env.forge_repo }}
           ref: ${{ env.forge_branch }}
           path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.xad_forge_repo }}
+          ref: ${{ env.xad_forge_branch }}
+          path: xad-forge
 
       - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
@@ -140,13 +157,14 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
             -DQLRISKS_BUILD_TEST_SUITE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON \
             ..
@@ -164,13 +182,14 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
             -DQLRISKS_USE_FORGE_CAPI=ON \
             -DQLRISKS_BUILD_TEST_SUITE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON \

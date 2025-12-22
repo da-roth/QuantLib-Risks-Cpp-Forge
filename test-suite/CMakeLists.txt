@@ -13,7 +13,6 @@ set(QLRISKS_TEST_SOURCES
     forwardrateagreement_xad.cpp
     hestonmodel_xad.cpp
     swap_xad.cpp
-    swaption_jit_pipeline_xad.cpp
 
     utilities_xad.cpp
     quantlibtestsuite_xad.cpp
@@ -31,7 +30,7 @@ set(QLRISKS_BENCHMARK_SOURCES
 set(QLRISKS_FORGE_TESTS_ENABLED FALSE)
 if(QLRISKS_ENABLE_FORGE_TESTS AND TARGET QLRisks::forge)
     message(STATUS "QLRisks test-suite: Adding Forge JIT tests")
-    list(APPEND QLRISKS_TEST_SOURCES jit_xad.cpp forgebackend_xad.cpp)
+    list(APPEND QLRISKS_TEST_SOURCES jit_xad.cpp forgebackend_xad.cpp swaption_jit_pipeline_xad.cpp)
     set(QLRISKS_FORGE_TESTS_ENABLED TRUE)
 elseif(QLRISKS_ENABLE_FORGE_TESTS)
     message(WARNING "QLRisks test-suite: QLRISKS_ENABLE_FORGE_TESTS=ON but QLRisks::forge not available")
