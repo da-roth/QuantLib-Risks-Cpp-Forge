@@ -59,7 +59,7 @@ if(QLRISKS_ENABLE_FORGE)
     endif()
 
     if(XAD_FORGE_FOUND)
-        # Create qlrisks-forge as an alias/wrapper for backward compatibility
+        # Create qlrisks-forge as an INTERFACE library wrapping xad-forge
         add_library(qlrisks-forge INTERFACE)
         add_library(QLRisks::forge ALIAS qlrisks-forge)
 
@@ -67,7 +67,6 @@ if(QLRISKS_ENABLE_FORGE)
             XADForge::xad-forge
         )
 
-        # Add compatibility header that aliases xad::forge -> qlrisks::forge
         target_compile_definitions(qlrisks-forge INTERFACE QLRISKS_HAS_FORGE=1)
 
         message(STATUS "QLRisks-Forge: Configured with xad-forge")

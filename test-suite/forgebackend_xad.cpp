@@ -13,7 +13,7 @@
 #include "utilities_xad.hpp"
 #include <ql/quantlib.hpp>
 #include <XAD/XAD.hpp>
-#include <qlrisks-forge/ForgeBackend.hpp>
+#include <xad-forge/ForgeBackend.hpp>
 #include <boost/test/unit_test.hpp>
 #include <cmath>
 #include <vector>

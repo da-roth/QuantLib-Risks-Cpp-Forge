@@ -54,8 +54,8 @@
 #include <map>
 
 // Forge JIT backends
-#include <qlrisks-forge/ForgeBackend.hpp>
-#include <qlrisks-forge/ForgeBackendAVX.hpp>
+#include <xad-forge/ForgeBackend.hpp>
+#include <xad-forge/ForgeBackendAVX.hpp>
 
 using namespace QuantLib;
 using namespace boost::unit_test_framework;
