@@ -851,7 +851,7 @@ BOOST_AUTO_TEST_CASE(testStage2ci_JITPathEvolutionVerification)
     // -------------------------------------------------------------------------
     std::cout << "  Part 2: JIT recording of evolve():\n";
 
-    auto forgeBackend1 = std::make_unique<qlrisks::forge::ForgeBackend>();
+    auto forgeBackend1 = std::make_unique<xad::forge::ForgeBackend>();
     xad::JITCompiler<double> jit(std::move(forgeBackend1));
 
     // JIT inputs: initial rates + random numbers
@@ -1214,7 +1214,7 @@ BOOST_AUTO_TEST_CASE(testStage2c_MonteCarloSwaptionWithJIT)
     std::cout << "    Recording path evolution + payoff into JIT graph...\n";
 
     // Create JIT compiler with ForgeBackend (NO TAPE!)
-    auto forgeBackend2 = std::make_unique<qlrisks::forge::ForgeBackend>();
+    auto forgeBackend2 = std::make_unique<xad::forge::ForgeBackend>();
     xad::JITCompiler<double> jit(std::move(forgeBackend2));
 
     // JIT inputs: initial forward rates + all random numbers up to exercise
@@ -2022,7 +2022,7 @@ BOOST_AUTO_TEST_CASE(testStage2_Comparison)
     // APPROACH 5: JIT - Custom loop with JIT
     // JIT also uses zero curve rates as inputs for fair comparison
     // =========================================================================
-    auto forgeBackend3 = std::make_unique<qlrisks::forge::ForgeBackend>();
+    auto forgeBackend3 = std::make_unique<xad::forge::ForgeBackend>();
     xad::JITCompiler<double> jit(std::move(forgeBackend3));
 
     // Register 10 zero curve rates as JIT inputs
@@ -2955,7 +2955,7 @@ BOOST_AUTO_TEST_CASE(testStage3_CombinedPipeline)
     tape2.deactivate();
 
     // JIT setup with ForgeBackend
-    auto forgeBackend4 = std::make_unique<qlrisks::forge::ForgeBackend>();
+    auto forgeBackend4 = std::make_unique<xad::forge::ForgeBackend>();
     xad::JITCompiler<double> jit(std::move(forgeBackend4));
 
     std::vector<xad::AD> jit_initRates(size);
@@ -4330,7 +4330,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             auto t_kernel_record_start = Clock::now();
 
             // Use ForgeBackend without graph optimizations
-            auto forgeBackendSlow = std::make_unique<qlrisks::forge::ForgeBackend>(false);
+            auto forgeBackendSlow = std::make_unique<xad::forge::ForgeBackend>(false);
             xad::JITCompiler<double> jit(std::move(forgeBackendSlow));
 
             std::vector<xad::AD> jit_initRates(size);
@@ -4630,7 +4630,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             auto t_kernel_record_start = Clock::now();
 
             // Use ForgeBackend with graph optimizations enabled
-            auto forgeBackendFast = std::make_unique<qlrisks::forge::ForgeBackend>(true);
+            auto forgeBackendFast = std::make_unique<xad::forge::ForgeBackend>(true);
             xad::JITCompiler<double> jit(std::move(forgeBackendFast));
 
             std::vector<xad::AD> jit_initRates(size);
@@ -5229,7 +5229,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             auto t_kernel_record_start = Clock::now();
 
             // Build JIT graph for single path (same as JIT Slow)
-            auto forgeBackendAVX = std::make_unique<qlrisks::forge::ForgeBackend>(false);
+            auto forgeBackendAVX = std::make_unique<xad::forge::ForgeBackend>(false);
             xad::JITCompiler<double> jit(std::move(forgeBackendAVX));
 
             std::vector<xad::AD> jit_initRates(size);
@@ -5308,7 +5308,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             jit.deactivate();
 
             // Create AVX backend and compile directly from JITGraph
-            qlrisks::forge::ForgeBackendAVX avxBackend(false);
+            xad::forge::ForgeBackendAVX avxBackend(false);
             avxBackend.compile(jitGraph);
 
             auto t_kernel_compile_end = Clock::now();
@@ -5319,7 +5319,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             double dPrice_dSwapRate_jit = 0.0;
 
             // Process paths in batches of 4
-            constexpr int BATCH_SIZE = qlrisks::forge::ForgeBackendAVX::VECTOR_WIDTH;
+            constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX::VECTOR_WIDTH;
             Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
 
             // Temporary arrays for batch processing
@@ -6286,7 +6286,7 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                 tape.deactivate();
 
                 // JIT kernel creation
-                auto forgeBackend = std::make_unique<qlrisks::forge::ForgeBackend>(false);
+                auto forgeBackend = std::make_unique<xad::forge::ForgeBackend>(false);
                 xad::JITCompiler<double> jit(std::move(forgeBackend));
 
                 std::vector<xad::AD> jit_initRates(size);
@@ -6775,7 +6775,7 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                 jit.deactivate();
 
                 // AVX backend with 4-path batching - compiles directly from JITGraph
-                qlrisks::forge::ForgeBackendAVX avxBackend(false);
+                xad::forge::ForgeBackendAVX avxBackend(false);
                 avxBackend.compile(jitGraph);
 
                 // MC execution with 4-path batching
@@ -6783,7 +6783,7 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                 std::vector<double> dPrice_dInitRates(size, 0.0);
                 double dPrice_dSwapRate = 0.0;
 
-                constexpr int BATCH_SIZE = qlrisks::forge::ForgeBackendAVX::VECTOR_WIDTH;
+                constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX::VECTOR_WIDTH;
                 Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
 
                 std::vector<double> inputBatch(BATCH_SIZE);
@@ -7405,7 +7405,7 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
             }
 
             // JIT kernel creation (recording)
-            auto forgeBackend = std::make_unique<qlrisks::forge::ForgeBackend>(false);
+            auto forgeBackend = std::make_unique<xad::forge::ForgeBackend>(false);
             xad::JITCompiler<double> jit(std::move(forgeBackend));
 
             std::vector<xad::AD> jit_initRates(size);
@@ -7734,7 +7734,7 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
             jit.deactivate();
 
             // AVX backend with 4-path batching
-            qlrisks::forge::ForgeBackendAVX avxBackend(false);
+            xad::forge::ForgeBackendAVX avxBackend(false);
             avxBackend.compile(jitGraph);
 
             if (isLast) {
@@ -7747,7 +7747,7 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
             std::vector<double> dPrice_dInitRates(size, 0.0);
             double dPrice_dSwapRate = 0.0;
 
-            constexpr int BATCH_SIZE = qlrisks::forge::ForgeBackendAVX::VECTOR_WIDTH;
+            constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX::VECTOR_WIDTH;
             Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
 
             std::vector<double> inputBatch(BATCH_SIZE);
