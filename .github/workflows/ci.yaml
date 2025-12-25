@@ -191,6 +191,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=OFF \
             -DQLRISKS_ENABLE_FORGE=ON \
             -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
             -DQLRISKS_BUILD_TEST_SUITE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON \
             ..
