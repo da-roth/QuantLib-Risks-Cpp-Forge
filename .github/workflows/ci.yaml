@@ -223,12 +223,11 @@ jobs:
         run: choco install -y ninja
 
       - name: Setup Boost
-        uses: MarkusJx/install-boost@v2.4.5
-        id: install-boost
-        with:
-          boost_version: 1.86.0
-          platform_version: 2022
-          toolset: msvc
+        run: |
+          $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.86.0/boost_1_86_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+          echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
 
       - name: Build Forge C API
         shell: cmd
@@ -244,8 +243,6 @@ jobs:
 
       - name: Configure QuantLib with XAD-JIT + Forge
         shell: cmd
-        env:
-          BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
         run: |
           cd QuantLib
           call "%VSVARSALL%" amd64

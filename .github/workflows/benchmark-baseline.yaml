@@ -57,11 +57,14 @@ env:
   qlrisks_branch: ${{ github.event.inputs.qlrisks_branch || 'main' }}
 
 jobs:
-  linux-baseline:
+  ##############################################################################
+  # Linux baseline benchmark
+  ##############################################################################
+  linux:
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
 
-    name: Linux Baseline (Original XAD)
+    name: Linux
 
     steps:
       - name: Checkout QuantLib
@@ -158,3 +161,111 @@ jobs:
         run: |
           cd QuantLib/build
           ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-baseline --log_level=message
+
+  ##############################################################################
+  # Windows baseline benchmark
+  ##############################################################################
+  windows:
+    runs-on: windows-2022
+
+    name: Windows
+
+    env:
+      VSVARSALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+    steps:
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ql_repo }}
+          ref: ${{ env.ql_branch }}
+          path: QuantLib
+
+      - name: Checkout XAD (Original)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.xad_repo }}
+          ref: ${{ env.xad_branch }}
+          path: xad
+
+      - name: Checkout QuantLib-Risks-Cpp (Original)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.qlrisks_repo }}
+          ref: ${{ env.qlrisks_branch }}
+          path: QuantLib-Risks-Cpp
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for baseline benchmark)
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Copy baseline benchmark to QuantLib-Risks-Cpp
+        shell: pwsh
+        run: |
+          # Copy benchmark files from Forge repo to original QuantLib-Risks-Cpp
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/swaption_benchmark_baseline.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/quantlibrisks_benchmark.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp" "QuantLib-Risks-Cpp/test-suite/"
+          # Add baseline benchmark to CMakeLists.txt
+          $cmakeAddition = @"
+
+          # Baseline benchmark (no Forge/JIT) - patched in from QuantLib-Risks-Cpp-Forge
+          add_executable(quantlib-risks-benchmark-baseline
+              quantlibrisks_benchmark.cpp
+              swaption_benchmark_baseline.cpp
+              utilities_xad.cpp
+              utilities_xad.hpp
+          )
+          set_target_properties(quantlib-risks-benchmark-baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")
+          if (NOT Boost_USE_STATIC_LIBS)
+              target_compile_definitions(quantlib-risks-benchmark-baseline PRIVATE BOOST_ALL_DYN_LINK)
+          endif()
+          target_link_libraries(quantlib-risks-benchmark-baseline PRIVATE
+              QuantLib-Risks
+              ql_library
+              `${QL_THREAD_LIBRARIES})
+          "@
+          Add-Content -Path "QuantLib-Risks-Cpp/test-suite/CMakeLists.txt" -Value $cmakeAddition
+
+      - name: Setup
+        run: choco install -y ninja
+
+      - name: Setup Boost
+        run: |
+          $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.86.0/boost_1_86_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+          echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
+
+      - name: Configure QuantLib with XAD (Original)
+        shell: cmd
+        run: |
+          cd QuantLib
+          call "%VSVARSALL%" amd64
+          cmake -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_BUILD_TEST_SUITE=ON
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          call "%VSVARSALL%" amd64
+          cmake --build . --target quantlib-risks-benchmark-baseline --config Release
+
+      - name: Run Baseline Benchmark
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          QuantLib-Risks-Cpp\test-suite\quantlib-risks-benchmark-baseline.exe --log_level=message

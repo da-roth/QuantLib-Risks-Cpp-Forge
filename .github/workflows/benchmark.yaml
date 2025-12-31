@@ -61,15 +61,14 @@ env:
   xad_forge_branch: ${{ github.event.inputs.xad_forge_branch || 'main' }}
 
 jobs:
-  linux-benchmark:
+  ##############################################################################
+  # Linux benchmark
+  ##############################################################################
+  linux:
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
-    strategy:
-      fail-fast: false
-      matrix:
-        capi: [off, on]
 
-    name: Linux (${{ matrix.capi == 'on' && 'C API' || 'C++ API' }})
+    name: Linux
 
     steps:
       - name: Checkout QuantLib
@@ -108,26 +107,14 @@ jobs:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.12
         with:
-          key: linux-benchmark-${{ matrix.capi }}
+          key: linux-benchmark
           max-size: 650M
 
       - name: Setup
         run: |
           apt-get update && apt-get install -y ninja-build ccache
 
-      - name: Build Forge (C++ API)
-        if: matrix.capi == 'off'
-        run: |
-          cd forge
-          cmake -B build -S tools/packaging \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
-          cmake --build build --config Release
-          cmake --install build --config Release
-
-      - name: Build Forge (C API)
-        if: matrix.capi == 'on'
+      - name: Build Forge C API
         run: |
           cd forge
           cmake -B build -S api/c \
@@ -137,34 +124,7 @@ jobs:
           cmake --build build --config Release
           cmake --install build --config Release
 
-      - name: Configure QuantLib with XAD + xad-forge (C++ API)
-        if: matrix.capi == 'off'
-        run: |
-          cd QuantLib
-          mkdir build
-          cd build
-          cmake -G Ninja -DBOOST_ROOT=/usr \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DXAD_WARNINGS_PARANOID=OFF \
-            -DXAD_ENABLE_JIT=ON \
-            -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
-            -DQL_NULL_AS_FUNCTIONS=ON \
-            -DQL_BUILD_TEST_SUITE=OFF \
-            -DQL_BUILD_EXAMPLES=OFF \
-            -DQL_BUILD_BENCHMARK=OFF \
-            -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_ENABLE_FORGE=ON \
-            -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
-            -DQLRISKS_ENABLE_FORGE_TESTS=ON \
-            ..
-
-      - name: Configure QuantLib with XAD + xad-forge (C API)
-        if: matrix.capi == 'on'
+      - name: Configure QuantLib with XAD + xad-forge
         run: |
           cd QuantLib
           mkdir build
@@ -200,3 +160,109 @@ jobs:
         run: |
           cd QuantLib/build
           ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+
+  ##############################################################################
+  # Windows benchmark
+  ##############################################################################
+  windows:
+    runs-on: windows-2022
+
+    name: Windows
+
+    env:
+      VSVARSALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+    steps:
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ql_repo }}
+          ref: ${{ env.ql_branch }}
+          path: QuantLib
+
+      - name: Checkout XAD-JIT
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.xad_repo }}
+          ref: ${{ env.xad_branch }}
+          path: xad-jit
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.forge_repo }}
+          ref: ${{ env.forge_branch }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.xad_forge_repo }}
+          ref: ${{ env.xad_forge_branch }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: choco install -y ninja
+
+      - name: Setup Boost
+        run: |
+          $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.86.0/boost_1_86_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+          echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
+
+      - name: Build Forge C API
+        shell: cmd
+        run: |
+          cd forge
+          call "%VSVARSALL%" amd64
+          cmake -B build -S api/c -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DFORGE_CAPI_BUILD_TESTS=OFF ^
+            -DCMAKE_INSTALL_PREFIX="%cd%\..\install"
+          cmake --build build --config Release
+          cmake --install build --config Release
+
+      - name: Configure QuantLib with XAD + xad-forge
+        shell: cmd
+        run: |
+          cd QuantLib
+          call "%VSVARSALL%" amd64
+          cmake -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=ON ^
+            -DCMAKE_PREFIX_PATH="%cd%\..\install" ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad-jit;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_ENABLE_FORGE=ON ^
+            -DQLRISKS_USE_FORGE_CAPI=ON ^
+            -DXAD_FORGE_USE_CAPI=ON ^
+            -DQLRISKS_BUILD_TEST_SUITE=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK=ON ^
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          call "%VSVARSALL%" amd64
+          cmake --build . --config Release
+
+      - name: Run Benchmark
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          set PATH=%cd%\..\..\install\bin;%PATH%
+          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-benchmark.exe --log_level=message
