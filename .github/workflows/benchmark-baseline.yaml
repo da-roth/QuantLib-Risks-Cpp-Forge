@@ -104,6 +104,8 @@ jobs:
              QuantLib-Risks-Cpp/test-suite/
           cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp \
              QuantLib-Risks-Cpp/test-suite/
+          cp QuantLib-Risks-Cpp-Forge/test-suite/benchmark_utils.hpp \
+             QuantLib-Risks-Cpp/test-suite/
           # Add baseline benchmark to CMakeLists.txt
           echo "" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
           echo "# Baseline benchmark (no Forge/JIT) - patched in from QuantLib-Risks-Cpp-Forge" >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt
@@ -208,6 +210,7 @@ jobs:
           Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/quantlibrisks_benchmark.cpp" "QuantLib-Risks-Cpp/test-suite/"
           Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp" "QuantLib-Risks-Cpp/test-suite/"
           Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/benchmark_utils.hpp" "QuantLib-Risks-Cpp/test-suite/"
           # Add baseline benchmark to CMakeLists.txt
           $cmakeAddition = @"
 
