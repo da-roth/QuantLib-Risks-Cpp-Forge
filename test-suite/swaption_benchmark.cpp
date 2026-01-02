@@ -53,6 +53,9 @@
 #include <vector>
 #include <map>
 
+// Benchmark utilities (environment detection, formatting)
+#include "benchmark_utils.hpp"
+
 // Forge JIT backends
 #include <xad-forge/ForgeBackend.hpp>
 #include <xad-forge/ForgeBackendAVX.hpp>
@@ -136,30 +139,29 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
     std::cout << "=============================================================================\n";
     std::cout << "  XAD JIT BENCHMARK: Simple Swaption (1Y into 1Y)\n";
     std::cout << "=============================================================================\n";
-    std::cout << std::endl;
+
+    // BenchmarkDotNet-style environment info
+    BenchmarkUtils::printEnvironmentHeader();
+
+    std::cout << "// * Benchmark Description *\n";
     std::cout << "  This benchmark compares Algorithmic Differentiation approaches for\n";
     std::cout << "  computing sensitivities in Monte Carlo swaption pricing.\n";
     std::cout << std::endl;
-    std::cout << "  TWO MC IMPLEMENTATIONS:\n";
-    std::cout << "    QL = QuantLib's MultiPathGenerator (full path storage)\n";
-    std::cout << "    RR = Direct process->evolve() calls (JIT-compatible)\n";
+    std::cout << "// * MC Implementations *\n";
+    std::cout << "  QL = QuantLib's MultiPathGenerator (full path storage)\n";
+    std::cout << "  RR = Direct process->evolve() calls (JIT-compatible)\n";
     std::cout << std::endl;
-    std::cout << "    QuantLib's MultiPathGenerator stores complete paths internally,\n";
-    std::cout << "    which records everything on the AD tape. The 'direct evolve'\n";
-    std::cout << "    approach calls the diffusion step-by-step with explicit inputs,\n";
-    std::cout << "    enabling JIT compilation of the inner loop.\n";
+    std::cout << "// * Approaches Tested *\n";
+    std::cout << "  XAD(QL)   - XAD tape + QuantLib MultiPathGenerator\n";
+    std::cout << "  XAD(RR)   - XAD tape + direct evolve (baseline for JIT)\n";
+    std::cout << "  JIT(RR)   - Forge JIT-compiled kernel\n";
+    std::cout << "  JIT-Intrp - XAD JIT graph interpreter (no native code)\n";
+    std::cout << "  JIT-AVX   - Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
     std::cout << std::endl;
-    std::cout << "  APPROACHES TESTED:\n";
-    std::cout << "    XAD(QL)   - XAD tape + QuantLib MultiPathGenerator\n";
-    std::cout << "    XAD(RR)   - XAD tape + direct evolve (baseline for JIT)\n";
-    std::cout << "    JIT(RR)   - Forge JIT-compiled kernel\n";
-    std::cout << "    JIT-Intrp - XAD JIT graph interpreter (no native code)\n";
-    std::cout << "    JIT-AVX   - Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
-    std::cout << std::endl;
-    std::cout << "  INSTRUMENT:\n";
-    std::cout << "    European payer swaption: 1Y option into 1Y swap\n";
-    std::cout << "    Model: LIBOR Market Model (LMM) with lognormal forwards\n";
-    std::cout << "    Sensitivities: dPrice/dMarketQuotes (9 inputs)\n";
+    std::cout << "// * Instrument *\n";
+    std::cout << "  European payer swaption: 1Y option into 1Y swap\n";
+    std::cout << "  Model: LIBOR Market Model (LMM) with lognormal forwards\n";
+    std::cout << "  Sensitivities: dPrice/dMarketQuotes (9 inputs)\n";
     std::cout << std::endl;
 
     using Clock = std::chrono::high_resolution_clock;
@@ -1259,29 +1261,28 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
         std::cout << " Done." << std::endl;
     }
 
-    // Print results table (compact format)
+    // Print results table (BenchmarkDotNet-style)
     std::cout << std::endl;
-    std::cout << "  " << std::string(79, '=') << "\n";
-    std::cout << "  RESULTS: Simple Swaption (times in ms)\n";
-    std::cout << "  " << std::string(79, '=') << "\n";
+    std::cout << "// * Results: Simple Swaption *\n";
     std::cout << std::endl;
 
-    std::cout << "    Paths |  XAD(QL) |  XAD(RR) |  JIT(RR) | JIT-Intrp |  JIT-AVX | Speedup\n";
-    std::cout << "   -------+----------+----------+----------+-----------+----------+---------\n";
+    std::cout << "| Paths  | XAD(QL) | XAD(RR) | JIT(RR) | JIT-Intrp | JIT-AVX | Speedup |\n";
+    std::cout << "|-------:|--------:|--------:|--------:|----------:|--------:|--------:|\n";
 
     for (Size tc = 0; tc < pathCounts.size(); ++tc) {
         double speedup = results[tc].xad_rrs_total / results[tc].jit_rrs_total;
-        std::cout << "  " << std::setw(6) << pathCounts[tc] << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].xad_ql_total << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].xad_rrs_total << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].jit_rrs_total << " |"
+        std::string pathStr = BenchmarkUtils::formatPathCount(static_cast<int>(pathCounts[tc]));
+        std::cout << "| " << std::setw(6) << pathStr << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].xad_ql_total << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].xad_rrs_total << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].jit_rrs_total << " |"
                   << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].jit_interp_total << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].jit_avx_total << " |"
-                  << std::fixed << std::setprecision(2) << std::setw(7) << speedup << "x\n";
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].jit_avx_total << " |"
+                  << std::fixed << std::setprecision(2) << std::setw(7) << speedup << "x |\n";
     }
 
     std::cout << std::endl;
-    std::cout << "  Speedup = XAD(RR) / JIT(RR)\n";
+    std::cout << "Speedup = XAD(RR) / JIT(RR). All times in ms.\n";
     std::cout << std::endl;
 
     // Basic verification
@@ -1301,23 +1302,28 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
     std::cout << "=============================================================================\n";
     std::cout << "  XAD JIT BENCHMARK: Larger Swaption (5Y into 5Y)\n";
     std::cout << "=============================================================================\n";
+
+    // BenchmarkDotNet-style environment info
+    BenchmarkUtils::printEnvironmentHeader();
+
+    std::cout << "// * Benchmark Description *\n";
+    std::cout << "  Approximates a more realistic scenario: larger computation graph,\n";
+    std::cout << "  more forward rates, longer simulation.\n";
     std::cout << std::endl;
-    std::cout << "  This benchmark attempts to approximate a more realistic scenario:\n";
-    std::cout << "  larger computation graph, more forward rates, longer simulation.\n";
-    std::cout << std::endl;
+    std::cout << "// * MC Implementation *\n";
     std::cout << "  All approaches use direct process->evolve() calls (JIT-compatible).\n";
     std::cout << "  The JIT kernel is recorded once and reused for all MC paths.\n";
     std::cout << std::endl;
-    std::cout << "  APPROACHES TESTED:\n";
-    std::cout << "    XAD       - XAD tape + direct evolve\n";
-    std::cout << "    JIT       - Forge JIT-compiled kernel\n";
-    std::cout << "    JIT-Intrp - XAD JIT graph interpreter (no native code)\n";
-    std::cout << "    JIT-AVX   - Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
+    std::cout << "// * Approaches Tested *\n";
+    std::cout << "  XAD       - XAD tape + direct evolve\n";
+    std::cout << "  JIT       - Forge JIT-compiled kernel\n";
+    std::cout << "  JIT-Intrp - XAD JIT graph interpreter (no native code)\n";
+    std::cout << "  JIT-AVX   - Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
     std::cout << std::endl;
-    std::cout << "  INSTRUMENT:\n";
-    std::cout << "    European receiver swaption: 5Y option into 5Y swap (10Y total)\n";
-    std::cout << "    Model: LIBOR Market Model (LMM) with 20 forward rates\n";
-    std::cout << "    Sensitivities: dPrice/dMarketQuotes (14 inputs)\n";
+    std::cout << "// * Instrument *\n";
+    std::cout << "  European receiver swaption: 5Y option into 5Y swap (10Y total)\n";
+    std::cout << "  Model: LIBOR Market Model (LMM) with 20 forward rates\n";
+    std::cout << "  Sensitivities: dPrice/dMarketQuotes (14 inputs)\n";
     std::cout << std::endl;
 
     using Clock = std::chrono::high_resolution_clock;
@@ -2453,55 +2459,56 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
                   << "ms, JIT-AVX=" << scalingResults[pathIdx].jit_avx_time << "ms\n";
     }  // end path count loop
 
-    // Print scaling table
+    // Print scaling table (BenchmarkDotNet-style)
     std::cout << std::endl;
-    std::cout << "  " << std::string(79, '=') << "\n";
-    std::cout << "  RESULTS: Larger Swaption (times in ms)\n";
-    std::cout << "  " << std::string(79, '=') << "\n";
+    std::cout << "// * Results: Larger Swaption *\n";
     std::cout << std::endl;
 
-    std::cout << "    Paths |       XAD |       JIT | JIT-Intrp |   JIT-AVX | Speedup\n";
-    std::cout << "   -------+-----------+-----------+-----------+-----------+---------\n";
+    std::cout << "| Paths  |     XAD |     JIT | JIT-Intrp | JIT-AVX | Speedup |\n";
+    std::cout << "|-------:|--------:|--------:|----------:|--------:|--------:|\n";
     for (Size i = 0; i < pathCounts.size(); ++i) {
-        std::string pathStr;
-        if (pathCounts[i] >= 1000) pathStr = std::to_string(pathCounts[i]/1000) + "K";
-        else pathStr = std::to_string(pathCounts[i]);
+        std::string pathStr = BenchmarkUtils::formatPathCount(static_cast<int>(pathCounts[i]));
 
         double speedup = scalingResults[i].xad_time / scalingResults[i].jit_avx_time;
-        std::cout << "   " << std::setw(6) << pathStr << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << scalingResults[i].xad_time << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << scalingResults[i].jit_time << " |"
+        std::cout << "| " << std::setw(6) << pathStr << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << scalingResults[i].xad_time << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << scalingResults[i].jit_time << " |"
                   << std::fixed << std::setprecision(1) << std::setw(10) << scalingResults[i].jit_interp_time << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << scalingResults[i].jit_avx_time << " |"
-                  << std::fixed << std::setprecision(2) << std::setw(7) << speedup << "x\n";
+                  << std::fixed << std::setprecision(1) << std::setw(8) << scalingResults[i].jit_avx_time << " |"
+                  << std::fixed << std::setprecision(2) << std::setw(7) << speedup << "x |\n";
     }
     std::cout << std::endl;
-
-    std::cout << "  MC PRICE COMPARISON (10K paths):\n";
-    std::cout << "    XAD:     " << std::fixed << std::setprecision(8) << xad_price << "\n";
-    std::cout << "    JIT:     " << std::fixed << std::setprecision(8) << jit_price << "\n";
-    std::cout << "    JIT-AVX: " << std::fixed << std::setprecision(8) << jit_avx_price << "\n";
+    std::cout << "Speedup = XAD / JIT-AVX. All times in ms.\n";
     std::cout << std::endl;
 
-    std::cout << "  DERIVATIVE COMPARISON (first 5 market quotes, 10K paths):\n";
-    std::cout << "    " << std::setw(12) << "Quote" << " | " << std::setw(14) << "XAD" << " | "
-              << std::setw(14) << "JIT" << " | " << std::setw(14) << "JIT-AVX" << "\n";
-    std::cout << "    " << std::string(60, '-') << "\n";
+    // Validation section
+    std::cout << "// * Validation (10K paths) *\n";
+    std::cout << std::endl;
+
+    std::cout << "MC Price:\n";
+    std::cout << "  XAD:     " << std::fixed << std::setprecision(8) << xad_price << "\n";
+    std::cout << "  JIT:     " << std::fixed << std::setprecision(8) << jit_price << "\n";
+    std::cout << "  JIT-AVX: " << std::fixed << std::setprecision(8) << jit_avx_price << "\n";
+    std::cout << std::endl;
+
+    std::cout << "Derivatives (first 5 market quotes):\n";
+    std::cout << "|       Quote |            XAD |            JIT |        JIT-AVX |\n";
+    std::cout << "|------------:|---------------:|---------------:|---------------:|\n";
     for (Size i = 0; i < std::min(Size(5), numMarketQuotes); ++i) {
         std::string label = (i < numDeposits) ? "Depo " + std::to_string(i) : "Swap " + std::to_string(i - numDeposits);
-        std::cout << "    " << std::setw(12) << label << " | "
-                  << std::scientific << std::setprecision(4) << std::setw(14) << xad_derivs[i] << " | "
-                  << std::scientific << std::setprecision(4) << std::setw(14) << jit_derivs[i] << " | "
-                  << std::scientific << std::setprecision(4) << std::setw(14) << jit_avx_derivs[i] << "\n";
+        std::cout << "| " << std::setw(11) << label << " |"
+                  << std::scientific << std::setprecision(4) << std::setw(15) << xad_derivs[i] << " |"
+                  << std::scientific << std::setprecision(4) << std::setw(15) << jit_derivs[i] << " |"
+                  << std::scientific << std::setprecision(4) << std::setw(15) << jit_avx_derivs[i] << " |\n";
     }
     std::cout << std::endl;
 
     // Final speedup summary
     double final_speedup_jit = scalingResults.back().xad_time / scalingResults.back().jit_time;
     double final_speedup_avx = scalingResults.back().xad_time / scalingResults.back().jit_avx_time;
-    std::cout << "  SPEEDUP vs XAD (10K paths):\n";
-    std::cout << "    JIT:     " << std::fixed << std::setprecision(2) << final_speedup_jit << "x\n";
-    std::cout << "    JIT-AVX: " << std::fixed << std::setprecision(2) << final_speedup_avx << "x\n";
+    std::cout << "// * Speedup Summary (10K paths) *\n";
+    std::cout << "  JIT:     " << std::fixed << std::setprecision(2) << final_speedup_jit << "x\n";
+    std::cout << "  JIT-AVX: " << std::fixed << std::setprecision(2) << final_speedup_avx << "x\n";
     std::cout << std::endl;
 
     // Verification

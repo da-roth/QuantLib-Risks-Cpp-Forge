@@ -51,6 +51,8 @@
 #include <vector>
 #include <map>
 
+// Benchmark utilities (environment detection, formatting)
+#include "benchmark_utils.hpp"
 
 using namespace QuantLib;
 using namespace boost::unit_test_framework;
@@ -131,22 +133,26 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
     std::cout << "=============================================================================\n";
     std::cout << "  XAD BASELINE BENCHMARK: Simple Swaption (1Y into 1Y)\n";
     std::cout << "=============================================================================\n";
+
+    // BenchmarkDotNet-style environment info
+    BenchmarkUtils::printEnvironmentHeader();
+
+    std::cout << "// * Benchmark Description *\n";
+    std::cout << "  XAD tape-based AD performance for computing sensitivities\n";
+    std::cout << "  in Monte Carlo swaption pricing.\n";
     std::cout << std::endl;
-    std::cout << "  This benchmark measures XAD tape-based AD performance for\n";
-    std::cout << "  computing sensitivities in Monte Carlo swaption pricing.\n";
+    std::cout << "// * MC Implementations *\n";
+    std::cout << "  QL = QuantLib's MultiPathGenerator (full path storage)\n";
+    std::cout << "  RR = Direct process->evolve() calls (explicit inputs)\n";
     std::cout << std::endl;
-    std::cout << "  TWO MC IMPLEMENTATIONS:\n";
-    std::cout << "    QL = QuantLib's MultiPathGenerator (full path storage)\n";
-    std::cout << "    RR = Direct process->evolve() calls (explicit inputs)\n";
+    std::cout << "// * Approaches Tested *\n";
+    std::cout << "  XAD(QL)   - XAD tape + QuantLib MultiPathGenerator\n";
+    std::cout << "  XAD(RR)   - XAD tape + direct evolve\n";
     std::cout << std::endl;
-    std::cout << "  APPROACHES TESTED:\n";
-    std::cout << "    XAD(QL)   - XAD tape + QuantLib MultiPathGenerator\n";
-    std::cout << "    XAD(RR)   - XAD tape + direct evolve\n";
-    std::cout << std::endl;
-    std::cout << "  INSTRUMENT:\n";
-    std::cout << "    European payer swaption: 1Y option into 1Y swap\n";
-    std::cout << "    Model: LIBOR Market Model (LMM) with lognormal forwards\n";
-    std::cout << "    Sensitivities: dPrice/dMarketQuotes (9 inputs)\n";
+    std::cout << "// * Instrument *\n";
+    std::cout << "  European payer swaption: 1Y option into 1Y swap\n";
+    std::cout << "  Model: LIBOR Market Model (LMM) with lognormal forwards\n";
+    std::cout << "  Sensitivities: dPrice/dMarketQuotes (9 inputs)\n";
     std::cout << std::endl;
 
     using Clock = std::chrono::high_resolution_clock;
@@ -551,22 +557,23 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
         std::cout << " Done." << std::endl;
     }
 
-    // Print results table (compact format)
+    // Print results table (BenchmarkDotNet-style)
     std::cout << std::endl;
-    std::cout << "  " << std::string(79, '=') << "\n";
-    std::cout << "  RESULTS: Simple Swaption (times in ms)\n";
-    std::cout << "  " << std::string(79, '=') << "\n";
+    std::cout << "// * Results: Simple Swaption *\n";
     std::cout << std::endl;
 
-    std::cout << "    Paths |  XAD(QL) |  XAD(RR)\n";
-    std::cout << "   -------+----------+----------\n";
+    std::cout << "| Paths  | XAD(QL) | XAD(RR) |\n";
+    std::cout << "|-------:|--------:|--------:|\n";
 
     for (Size tc = 0; tc < pathCounts.size(); ++tc) {
-        std::cout << "  " << std::setw(6) << pathCounts[tc] << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].xad_ql_total << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << results[tc].xad_rrs_total << "\n";
+        std::string pathStr = BenchmarkUtils::formatPathCount(static_cast<int>(pathCounts[tc]));
+        std::cout << "| " << std::setw(6) << pathStr << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].xad_ql_total << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << results[tc].xad_rrs_total << " |\n";
     }
 
+    std::cout << std::endl;
+    std::cout << "All times in ms.\n";
     std::cout << std::endl;
 
     // Basic verification
@@ -586,17 +593,21 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
     std::cout << "=============================================================================\n";
     std::cout << "  XAD BASELINE BENCHMARK: Larger Swaption (5Y into 5Y)\n";
     std::cout << "=============================================================================\n";
+
+    // BenchmarkDotNet-style environment info
+    BenchmarkUtils::printEnvironmentHeader();
+
+    std::cout << "// * Benchmark Description *\n";
+    std::cout << "  Approximates a more realistic scenario: larger computation graph,\n";
+    std::cout << "  more forward rates, longer simulation.\n";
     std::cout << std::endl;
-    std::cout << "  This benchmark attempts to approximate a more realistic scenario:\n";
-    std::cout << "  larger computation graph, more forward rates, longer simulation.\n";
+    std::cout << "// * Approach Tested *\n";
+    std::cout << "  XAD - XAD tape + direct evolve\n";
     std::cout << std::endl;
-    std::cout << "  APPROACH TESTED:\n";
-    std::cout << "    XAD - XAD tape + direct evolve\n";
-    std::cout << std::endl;
-    std::cout << "  INSTRUMENT:\n";
-    std::cout << "    European receiver swaption: 5Y option into 5Y swap (10Y total)\n";
-    std::cout << "    Model: LIBOR Market Model (LMM) with 20 forward rates\n";
-    std::cout << "    Sensitivities: dPrice/dMarketQuotes (14 inputs)\n";
+    std::cout << "// * Instrument *\n";
+    std::cout << "  European receiver swaption: 5Y option into 5Y swap (10Y total)\n";
+    std::cout << "  Model: LIBOR Market Model (LMM) with 20 forward rates\n";
+    std::cout << "  Sensitivities: dPrice/dMarketQuotes (14 inputs)\n";
     std::cout << std::endl;
 
     using Clock = std::chrono::high_resolution_clock;
@@ -949,36 +960,38 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
         std::cout << "    Avg time: XAD=" << std::fixed << std::setprecision(1) << scalingResults[pathIdx].xad_time << "ms\n";
     }  // end path count loop
 
-    // Print scaling table
+    // Print scaling table (BenchmarkDotNet-style)
     std::cout << std::endl;
-    std::cout << "  " << std::string(79, '=') << "\n";
-    std::cout << "  RESULTS: Larger Swaption (times in ms)\n";
-    std::cout << "  " << std::string(79, '=') << "\n";
+    std::cout << "// * Results: Larger Swaption *\n";
     std::cout << std::endl;
 
-    std::cout << "    Paths |       XAD\n";
-    std::cout << "   -------+-----------\n";
+    std::cout << "| Paths  |     XAD |\n";
+    std::cout << "|-------:|--------:|\n";
     for (Size i = 0; i < pathCounts.size(); ++i) {
-        std::string pathStr;
-        if (pathCounts[i] >= 1000) pathStr = std::to_string(pathCounts[i]/1000) + "K";
-        else pathStr = std::to_string(pathCounts[i]);
+        std::string pathStr = BenchmarkUtils::formatPathCount(static_cast<int>(pathCounts[i]));
 
-        std::cout << "   " << std::setw(6) << pathStr << " |"
-                  << std::fixed << std::setprecision(1) << std::setw(10) << scalingResults[i].xad_time << "\n";
+        std::cout << "| " << std::setw(6) << pathStr << " |"
+                  << std::fixed << std::setprecision(1) << std::setw(8) << scalingResults[i].xad_time << " |\n";
     }
     std::cout << std::endl;
-
-    std::cout << "  MC PRICE (10K paths):\n";
-    std::cout << "    XAD: " << std::fixed << std::setprecision(8) << xad_price << "\n";
+    std::cout << "All times in ms.\n";
     std::cout << std::endl;
 
-    std::cout << "  DERIVATIVES (first 5 market quotes, 10K paths):\n";
-    std::cout << "    " << std::setw(12) << "Quote" << " | " << std::setw(14) << "XAD" << "\n";
-    std::cout << "    " << std::string(30, '-') << "\n";
+    // Validation section
+    std::cout << "// * Validation (10K paths) *\n";
+    std::cout << std::endl;
+
+    std::cout << "MC Price:\n";
+    std::cout << "  XAD: " << std::fixed << std::setprecision(8) << xad_price << "\n";
+    std::cout << std::endl;
+
+    std::cout << "Derivatives (first 5 market quotes):\n";
+    std::cout << "|       Quote |            XAD |\n";
+    std::cout << "|------------:|---------------:|\n";
     for (Size i = 0; i < std::min(Size(5), numMarketQuotes); ++i) {
         std::string label = (i < numDeposits) ? "Depo " + std::to_string(i) : "Swap " + std::to_string(i - numDeposits);
-        std::cout << "    " << std::setw(12) << label << " | "
-                  << std::scientific << std::setprecision(4) << std::setw(14) << xad_derivs[i] << "\n";
+        std::cout << "| " << std::setw(11) << label << " |"
+                  << std::scientific << std::setprecision(4) << std::setw(15) << xad_derivs[i] << " |\n";
     }
     std::cout << std::endl;
 
