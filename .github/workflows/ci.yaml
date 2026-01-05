@@ -58,6 +58,14 @@ on:
         description: Branch or tag for xad-forge repository
         required: true
         default: main
+      xad_jit_repo:
+        description: XAD-JIT repository in <owner>/<repo> format (for Forge jobs)
+        required: true
+        default: da-roth/xad-jit
+      xad_jit_branch:
+        description: Branch or tag for XAD-JIT repository (for Forge jobs)
+        required: true
+        default: main
 
 env:
   ql_repo: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
@@ -68,6 +76,8 @@ env:
   forge_branch: ${{ github.event.inputs.forge_branch || 'main' }}
   xad_forge_repo: ${{ github.event.inputs.xad_forge_repo || 'da-roth/xad-forge' }}
   xad_forge_branch: ${{ github.event.inputs.xad_forge_branch || 'main' }}
+  xad_jit_repo: ${{ github.event.inputs.xad_jit_repo || 'da-roth/xad-jit' }}
+  xad_jit_branch: ${{ github.event.inputs.xad_jit_branch || 'main' }}
 
 jobs:
   ##############################################################################
@@ -483,12 +493,12 @@ jobs:
           ref: ${{ env.ql_branch }}
           path: QuantLib
 
-      - name: Checkout XAD
+      - name: Checkout XAD-JIT
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.xad_repo }}
-          ref: ${{ env.xad_branch }}
-          path: xad
+          repository: ${{ env.xad_jit_repo }}
+          ref: ${{ env.xad_jit_branch }}
+          path: xad-jit
 
       - name: Checkout Forge
         uses: actions/checkout@v4
@@ -541,7 +551,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad-jit;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -593,12 +603,12 @@ jobs:
           ref: ${{ env.ql_branch }}
           path: QuantLib
 
-      - name: Checkout XAD
+      - name: Checkout XAD-JIT
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.xad_repo }}
-          ref: ${{ env.xad_branch }}
-          path: xad
+          repository: ${{ env.xad_jit_repo }}
+          ref: ${{ env.xad_jit_branch }}
+          path: xad-jit
 
       - name: Checkout Forge
         uses: actions/checkout@v4
@@ -654,7 +664,7 @@ jobs:
             -DXAD_ENABLE_JIT=ON ^
             -DXAD_STATIC_MSVC_RUNTIME=ON ^
             -DCMAKE_PREFIX_PATH="%cd%\..\install" ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad-jit;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
             -DQL_NULL_AS_FUNCTIONS=ON ^
             -DQL_BUILD_TEST_SUITE=OFF ^
