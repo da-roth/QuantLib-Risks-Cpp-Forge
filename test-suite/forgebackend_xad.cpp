@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendLinearFunction)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             forgeOutputs.push_back(output);
 
             jit.clearDerivatives();
@@ -174,7 +174,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendMathFunctions)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             forgeOutputs.push_back(output);
 
             jit.clearDerivatives();
@@ -241,7 +241,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendABoolBranching)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             forgeOutputs.push_back(output);
 
             jit.clearDerivatives();
@@ -281,12 +281,12 @@ BOOST_AUTO_TEST_CASE(testForgeBackendBasicInstantiation)
     jit.compile();  // Compile before forward
 
     double output;
-    jit.forward(&output, 1);
+    jit.forward(&output);
     std::cout << "  f(2) = " << output << " (expected: 10)" << std::endl;
     BOOST_CHECK_CLOSE(10.0, output, 1e-10);  // f(2) = 4 + 6 = 10
 
     value(x) = 5.0;
-    jit.forward(&output, 1);
+    jit.forward(&output);
     std::cout << "  f(5) = " << output << " (expected: 40)" << std::endl;
     BOOST_CHECK_CLOSE(40.0, output, 1e-10);  // f(5) = 25 + 15 = 40
 

@@ -1330,7 +1330,7 @@ BOOST_AUTO_TEST_CASE(testStage2c_MonteCarloSwaptionWithJIT)
 
         // Forward pass: execute JIT-compiled kernel
         double payoff_value;
-        jit.forward(&payoff_value, 1);
+        jit.forward(&payoff_value);
         mcPrice_jit += payoff_value;
 
         // Backward pass: compute derivatives
@@ -2126,7 +2126,7 @@ BOOST_AUTO_TEST_CASE(testStage2_Comparison)
         for (Size m = 0; m < totalRandoms; ++m) value(jit_randoms[m]) = allRandoms[n][m];
 
         double payoff_value;
-        jit.forward(&payoff_value, 1);
+        jit.forward(&payoff_value);
         mcPrice_jit += payoff_value;
     }
     mcPrice_jit /= static_cast<double>(nrTrails);
@@ -3041,7 +3041,7 @@ BOOST_AUTO_TEST_CASE(testStage3_CombinedPipeline)
         }
 
         double payoff_value;
-        jit.forward(&payoff_value, 1);
+        jit.forward(&payoff_value);
         mcPrice_jit += payoff_value;
 
         jit.clearDerivatives();
@@ -4437,7 +4437,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                 // Kernel exec timing
                 auto t_exec_start = Clock::now();
                 double payoff_value;
-                jit.forward(&payoff_value, 1);
+                jit.forward(&payoff_value);
                 auto t_exec_end = Clock::now();
                 kernel_exec_time += Duration(t_exec_end - t_exec_start).count();
 
@@ -4737,7 +4737,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                 // Kernel exec timing
                 auto t_exec_start = Clock::now();
                 double payoff_value;
-                jit.forward(&payoff_value, 1);
+                jit.forward(&payoff_value);
                 auto t_exec_end = Clock::now();
                 kernel_exec_time += Duration(t_exec_end - t_exec_start).count();
 
@@ -5036,7 +5036,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                 // Kernel exec timing
                 auto t_exec_start = Clock::now();
                 double payoff_value;
-                jit.forward(&payoff_value, 1);
+                jit.forward(&payoff_value);
                 auto t_exec_end = Clock::now();
                 kernel_exec_time += Duration(t_exec_end - t_exec_start).count();
 
@@ -5325,7 +5325,6 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
             // Temporary arrays for batch processing
             double inputLanes[BATCH_SIZE];
             double outputLanes[BATCH_SIZE];
-            double gradLanes[BATCH_SIZE];
 
             // Granular timing accumulators
             double set_inputs_time = 0.0;
@@ -5345,14 +5344,14 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                     for (int lane = 0; lane < BATCH_SIZE; ++lane) {
                         inputLanes[lane] = value(initRates2[k]);
                     }
-                    avxBackend.setInputLanes(k, inputLanes);
+                    avxBackend.setInput(k, inputLanes);
                 }
 
                 // Set swap rate (same for all 4 paths)
                 for (int lane = 0; lane < BATCH_SIZE; ++lane) {
                     inputLanes[lane] = value(swapRate2_tape);
                 }
-                avxBackend.setInputLanes(size, inputLanes);
+                avxBackend.setInput(size, inputLanes);
 
                 // Set random numbers (different for each path in batch)
                 for (Size m = 0; m < fullGridRandoms; ++m) {
@@ -5364,7 +5363,7 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                             inputLanes[lane] = 0.0;  // Padding for incomplete batch
                         }
                     }
-                    avxBackend.setInputLanes(size + 1 + m, inputLanes);
+                    avxBackend.setInput(size + 1 + m, inputLanes);
                 }
 
                 auto t_set_end = Clock::now();
@@ -5373,18 +5372,13 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                 // Kernel exec timing (forward + backward pass together)
                 auto t_exec_start = Clock::now();
 
-                // Prepare output adjoints (seed with 1.0 for all lanes)
-                double outputAdjoints[BATCH_SIZE];
-                for (int lane = 0; lane < BATCH_SIZE; ++lane) {
-                    outputAdjoints[lane] = 1.0;
-                }
-
                 // Prepare containers for results
                 // Need space for: initial rates (size) + swap rate (1) + random numbers (fullGridRandoms)
-                std::vector<std::array<double, BATCH_SIZE>> inputGradients(size + 1 + fullGridRandoms);
+                std::size_t numInputs = size + 1 + fullGridRandoms;
+                std::vector<double> inputGradients(numInputs * BATCH_SIZE);
 
                 // Execute forward + backward in one call
-                avxBackend.forwardAndBackward(outputAdjoints, outputLanes, inputGradients);
+                avxBackend.forwardAndBackward(outputLanes, inputGradients.data());
 
                 auto t_exec_end = Clock::now();
                 kernel_exec_time += Duration(t_exec_end - t_exec_start).count();
@@ -5401,11 +5395,11 @@ BOOST_AUTO_TEST_CASE(testStage4_Benchmarks)
                 auto t_grad_mc_start = Clock::now();
                 for (Size k = 0; k < size; ++k) {
                     for (Size lane = 0; lane < pathsInBatch; ++lane) {
-                        dPrice_dInitRates[k] += inputGradients[k][lane];
+                        dPrice_dInitRates[k] += inputGradients[k * BATCH_SIZE + lane];
                     }
                 }
                 for (Size lane = 0; lane < pathsInBatch; ++lane) {
-                    dPrice_dSwapRate_jit += inputGradients[size][lane];
+                    dPrice_dSwapRate_jit += inputGradients[size * BATCH_SIZE + lane];
                 }
                 auto t_grad_mc_end = Clock::now();
                 get_gradients_time += Duration(t_grad_mc_end - t_grad_mc_start).count();
@@ -6363,7 +6357,7 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                     for (Size m = 0; m < fullGridRandoms; ++m) value(jit_randoms[m]) = allRandoms[n][m];
 
                     double payoff_value;
-                    jit.forward(&payoff_value, 1);
+                    jit.forward(&payoff_value);
                     mcPrice += payoff_value;
 
                     jit.clearDerivatives();
@@ -6574,7 +6568,7 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                     for (Size m = 0; m < fullGridRandoms; ++m) value(jit_randoms[m]) = allRandoms[n][m];
 
                     double payoff_value;
-                    jit.forward(&payoff_value, 1);
+                    jit.forward(&payoff_value);
                     mcPrice += payoff_value;
 
                     jit.clearDerivatives();
@@ -6788,8 +6782,6 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
 
                 std::vector<double> inputBatch(BATCH_SIZE);
                 std::vector<double> outputBatch(BATCH_SIZE);
-                std::vector<double> adjointBatch(BATCH_SIZE, 1.0);
-                std::vector<double> gradBatch(BATCH_SIZE);
 
                 // Pre-compute input buffer indices for gradient retrieval
                 std::vector<size_t> inputBufferIndices;
@@ -6806,13 +6798,13 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                     for (Size k = 0; k < size; ++k) {
                         for (int lane = 0; lane < BATCH_SIZE; ++lane)
                             inputBatch[lane] = value(initRates[k]);
-                        avxBackend.setInputLanes(k, inputBatch.data());
+                        avxBackend.setInput(k, inputBatch.data());
                     }
 
                     // Set swapRate (same for all paths in batch)
                     for (int lane = 0; lane < BATCH_SIZE; ++lane)
                         inputBatch[lane] = value(swapRate_tape);
-                    avxBackend.setInputLanes(size, inputBatch.data());
+                    avxBackend.setInput(size, inputBatch.data());
 
                     // Set random numbers (different for each path in batch)
                     for (Size m = 0; m < fullGridRandoms; ++m) {
@@ -6820,13 +6812,14 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                             Size pathIdx = batchStart + lane;
                             inputBatch[lane] = (pathIdx < nrTrails) ? allRandoms[pathIdx][m] : 0.0;
                         }
-                        avxBackend.setInputLanes(size + 1 + m, inputBatch.data());
+                        avxBackend.setInput(size + 1 + m, inputBatch.data());
                     }
 
                     // Execute forward + backward in one call
                     // Need space for: initial rates (size) + swap rate (1) + random numbers (fullGridRandoms)
-                    std::vector<std::array<double, BATCH_SIZE>> inputGradients(size + 1 + fullGridRandoms);
-                    avxBackend.forwardAndBackward(adjointBatch.data(), outputBatch.data(), inputGradients);
+                    std::size_t numInputs = size + 1 + fullGridRandoms;
+                    std::vector<double> inputGradients(numInputs * BATCH_SIZE);
+                    avxBackend.forwardAndBackward(outputBatch.data(), inputGradients.data());
 
                     // Accumulate MC price
                     for (Size lane = 0; lane < actualBatchSize; ++lane) {
@@ -6836,13 +6829,13 @@ BOOST_AUTO_TEST_CASE(testStage5_ScalingBenchmarks)
                     // Accumulate gradients
                     for (Size k = 0; k < size; ++k) {
                         for (Size lane = 0; lane < actualBatchSize; ++lane) {
-                            dPrice_dInitRates[k] += inputGradients[k][lane];
+                            dPrice_dInitRates[k] += inputGradients[k * BATCH_SIZE + lane];
                         }
                     }
 
                     // Accumulate gradient for swap rate
                     for (Size lane = 0; lane < actualBatchSize; ++lane) {
-                        dPrice_dSwapRate += inputGradients[size][lane];
+                        dPrice_dSwapRate += inputGradients[size * BATCH_SIZE + lane];
                     }
                 }
 
@@ -7492,7 +7485,7 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
                 for (Size m = 0; m < fullGridRandoms; ++m) value(jit_randoms[m]) = allRandoms[n][m];
 
                 double payoff_value;
-                jit.forward(&payoff_value, 1);
+                jit.forward(&payoff_value);
                 mcPrice += payoff_value;
 
                 jit.clearDerivatives();
@@ -7752,7 +7745,6 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
 
             std::vector<double> inputBatch(BATCH_SIZE);
             std::vector<double> outputBatch(BATCH_SIZE);
-            std::vector<double> adjointBatch(BATCH_SIZE, 1.0);
 
             // Pre-compute input buffer indices
             std::vector<size_t> inputBufferIndices;
@@ -7769,13 +7761,13 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
                 for (Size k = 0; k < size; ++k) {
                     for (int lane = 0; lane < BATCH_SIZE; ++lane)
                         inputBatch[lane] = value(initRates[k]);
-                    avxBackend.setInputLanes(k, inputBatch.data());
+                    avxBackend.setInput(k, inputBatch.data());
                 }
 
                 // Set swapRate
                 for (int lane = 0; lane < BATCH_SIZE; ++lane)
                     inputBatch[lane] = value(swapRate_tape);
-                avxBackend.setInputLanes(size, inputBatch.data());
+                avxBackend.setInput(size, inputBatch.data());
 
                 // Set random numbers
                 for (Size m = 0; m < fullGridRandoms; ++m) {
@@ -7783,12 +7775,13 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
                         Size pathIdx = batchStart + lane;
                         inputBatch[lane] = (pathIdx < nrTrails) ? allRandoms[pathIdx][m] : 0.0;
                     }
-                    avxBackend.setInputLanes(size + 1 + m, inputBatch.data());
+                    avxBackend.setInput(size + 1 + m, inputBatch.data());
                 }
 
                 // Execute forward + backward
-                std::vector<std::array<double, BATCH_SIZE>> inputGradients(size + 1 + fullGridRandoms);
-                avxBackend.forwardAndBackward(adjointBatch.data(), outputBatch.data(), inputGradients);
+                std::size_t numInputs = size + 1 + fullGridRandoms;
+                std::vector<double> inputGradients(numInputs * BATCH_SIZE);
+                avxBackend.forwardAndBackward(outputBatch.data(), inputGradients.data());
 
                 // Accumulate MC price
                 for (Size lane = 0; lane < actualBatchSize; ++lane) {
@@ -7798,12 +7791,12 @@ BOOST_AUTO_TEST_CASE(testStage6_ProductionLikeBenchmarks)
                 // Accumulate gradients
                 for (Size k = 0; k < size; ++k) {
                     for (Size lane = 0; lane < actualBatchSize; ++lane) {
-                        dPrice_dInitRates[k] += inputGradients[k][lane];
+                        dPrice_dInitRates[k] += inputGradients[k * BATCH_SIZE + lane];
                     }
                 }
 
                 for (Size lane = 0; lane < actualBatchSize; ++lane) {
-                    dPrice_dSwapRate += inputGradients[size][lane];
+                    dPrice_dSwapRate += inputGradients[size * BATCH_SIZE + lane];
                 }
             }
 

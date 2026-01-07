@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(testJITLinearFunction)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             jitOutputs.push_back(output);
 
             jit.clearDerivatives();
@@ -189,7 +189,7 @@ BOOST_AUTO_TEST_CASE(testJITMathFunctions)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             jitOutputs.push_back(output);
 
             jit.clearDerivatives();
@@ -255,7 +255,7 @@ BOOST_AUTO_TEST_CASE(testJITBranchingRegularIf)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             jitOutputs.push_back(output);
         }
     }
@@ -316,7 +316,7 @@ BOOST_AUTO_TEST_CASE(testJITBranchingABool)
         {
             value(x) = input;
             double output;
-            jit.forward(&output, 1);
+            jit.forward(&output);
             jitOutputs.push_back(output);
 
             jit.clearDerivatives();
