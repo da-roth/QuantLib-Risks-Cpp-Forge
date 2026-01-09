@@ -648,7 +648,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
                 tape.deactivate();
 
                 // JIT kernel creation
-                auto forgeBackend = std::make_unique<xad::forge::ForgeBackend>(false);
+                auto forgeBackend = std::make_unique<xad::forge::ForgeBackend<double>>(false);
                 xad::JITCompiler<double> jit(std::move(forgeBackend));
 
                 std::vector<xad::AD> jit_initRates(size);
@@ -1137,7 +1137,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
                 jit.deactivate();
 
                 // AVX backend with 4-path batching - compiles directly from JITGraph
-                xad::forge::ForgeBackendAVX avxBackend(false);
+                xad::forge::ForgeBackendAVX<double> avxBackend(false);
                 avxBackend.compile(jitGraph);
 
                 // MC execution with 4-path batching
@@ -1145,7 +1145,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_SimpleSwaptionScaling)
                 std::vector<double> dPrice_dInitRates(size, 0.0);
                 double dPrice_dSwapRate = 0.0;
 
-                constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX::VECTOR_WIDTH;
+                constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX<double>::VECTOR_WIDTH;
                 Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
 
                 std::vector<double> inputBatch(BATCH_SIZE);
@@ -1782,7 +1782,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
             }
 
             // JIT kernel creation (recording)
-            auto forgeBackend = std::make_unique<xad::forge::ForgeBackend>(false);
+            auto forgeBackend = std::make_unique<xad::forge::ForgeBackend<double>>(false);
             xad::JITCompiler<double> jit(std::move(forgeBackend));
 
             std::vector<xad::AD> jit_initRates(size);
@@ -2323,7 +2323,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
             jit.deactivate();
 
             // AVX backend with 4-path batching
-            xad::forge::ForgeBackendAVX avxBackend(false);
+            xad::forge::ForgeBackendAVX<double> avxBackend(false);
             avxBackend.compile(jitGraph);
 
             if (isLast) {
@@ -2336,7 +2336,7 @@ BOOST_AUTO_TEST_CASE(testBenchmark_LargerSwaptionScaling)
             std::vector<double> dPrice_dInitRates(size, 0.0);
             double dPrice_dSwapRate = 0.0;
 
-            constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX::VECTOR_WIDTH;
+            constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX<double>::VECTOR_WIDTH;
             Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
 
             std::vector<double> inputBatch(BATCH_SIZE);

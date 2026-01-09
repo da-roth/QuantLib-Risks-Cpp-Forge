@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendLinearFunction)
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
         xad::JITCompiler<double, 1> jit(
-            std::make_unique<xad::forge::ForgeBackend>());
+            std::make_unique<xad::forge::ForgeBackend<double>>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -161,7 +161,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendMathFunctions)
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
         xad::JITCompiler<double, 1> jit(
-            std::make_unique<xad::forge::ForgeBackend>());
+            std::make_unique<xad::forge::ForgeBackend<double>>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -228,7 +228,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendABoolBranching)
     std::vector<double> forgeOutputs, forgeDerivatives;
     {
         xad::JITCompiler<double, 1> jit(
-            std::make_unique<xad::forge::ForgeBackend>());
+            std::make_unique<xad::forge::ForgeBackend<double>>());
 
         xad::AD x(inputs[0]);
         jit.registerInput(x);
@@ -271,7 +271,7 @@ BOOST_AUTO_TEST_CASE(testForgeBackendBasicInstantiation)
     std::cout << "\n=== ForgeBackend Basic Test: f(x) = x^2 + 3x ===" << std::endl;
 
     xad::JITCompiler<double, 1> jit(
-        std::make_unique<xad::forge::ForgeBackend>());
+        std::make_unique<xad::forge::ForgeBackend<double>>());
 
     xad::AD x(2.0);
     jit.registerInput(x);
