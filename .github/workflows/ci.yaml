@@ -1,19 +1,19 @@
 ##############################################################################
 #
-#  QuantLib-Risks-Cpp-Forge CI Workflow
+#  QuantLib-Risks-Cpp CI Workflow
 #
-#  This workflow mirrors the original QuantLib-Risks-Cpp CI and additionally
-#  tests with Forge JIT acceleration on Linux and Windows.
+#  Tests QuantLib-Risks-Cpp with XAD automatic differentiation, and optionally
+#  with Forge JIT acceleration on Linux and Windows.
 #
 #  Jobs:
-#  - xad-linux: Original XAD tests (C++17, C++20, AAD ON/OFF)
-#  - xad-win: Original XAD tests (C++17, C++20, AAD ON/OFF)
-#  - xad-macos: Original XAD tests (C++17, C++20, AAD ON/OFF)
-#  - xad-linux-std-classes: Original XAD with QL_USE_STD_CLASSES
+#  - xad-linux: XAD tests (C++17, C++20, AAD ON/OFF)
+#  - xad-win: XAD tests (C++17, C++20, AAD ON/OFF)
+#  - xad-macos: XAD tests (C++17, C++20, AAD ON/OFF)
+#  - xad-linux-std-classes: XAD with QL_USE_STD_CLASSES
 #  - forge-linux: XAD + Forge JIT tests (C++17, Release/Debug)
 #  - forge-windows: XAD + Forge JIT tests (C++17, Release/Debug)
 #
-#  Copyright (C) 2025 The QuantLib-Risks-Cpp-Forge Authors
+#  Copyright (C) 2025 Xcelerit Computing Limited
 #
 #  SPDX-License-Identifier: AGPL-3.0-or-later
 #

@@ -3,8 +3,8 @@
 #  QuantLib-Risks Benchmarks
 #
 #  Compares different AD configurations for Swaption pricing:
-#  - QL + XAD:       Original QuantLib-Risks-Cpp with XAD tape (baseline)
-#  - QL + XAD-Forge: QuantLib-Risks-Cpp-Forge with Forge JIT backends
+#  - QL + XAD:       QuantLib-Risks-Cpp with XAD tape (baseline)
+#  - QL + XAD-Forge: QuantLib-Risks-Cpp with Forge JIT backends
 #
 #  Jobs:
 #  - Linux/Windows, QL + XAD:       True baseline (original repo, XAD tape)
@@ -207,7 +207,7 @@ jobs:
 
   ##############################################################################
   # Linux, QL + XAD-Forge
-  # Uses QuantLib-Risks-Cpp-Forge with Forge JIT backends
+  # Uses QuantLib-Risks-Cpp with Forge JIT backends
   # Runs all methods: XAD tape + JIT-Forge + JIT-ForgeAVX2
   ##############################################################################
   linux-xad-forge:
