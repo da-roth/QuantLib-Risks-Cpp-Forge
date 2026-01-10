@@ -257,8 +257,6 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
     Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
     DayCounter dayCounter = Actual360();
 
-    Size numMarketQuotes = config.numDeposits + config.numSwaps;
-
     // Build base curve (using first deposit rate and last swap rate as endpoints)
     std::vector<Rate> baseZeroRates = {config.depoRates[0], config.swapRates.back()};
     std::vector<Date> baseDates = {settlementDate, settlementDate + config.curveEndYears * Years};
@@ -304,8 +302,6 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
         accrualStart[k] = value(baseProcess->accrualStartTimes()[k]);
         accrualEnd[k] = value(baseProcess->accrualEndTimes()[k]);
     }
-
-    Size numIntermediates = config.size + 1;
 
     // Pre-generate random numbers
     Size maxPaths = static_cast<Size>(*std::max_element(config.pathCounts.begin(), config.pathCounts.end()));
@@ -355,14 +351,14 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             {
                 auto t_start = Clock::now();
 
-                Size numMarketQuotes = config.numDeposits + config.numSwaps;
-                double eps = 1e-5;
+                Size fdNumMarketQuotes = config.numDeposits + config.numSwaps;
+                Real eps = 1e-5;
 
-                // Base price computation function (no AD)
-                auto computePrice = [&](const std::vector<double>& depoRatesIn,
-                                        const std::vector<double>& swapRatesIn) -> double
+                // Price computation function using Real (passive mode - no tape)
+                // Uses Real types throughout since QuantLib APIs expect them
+                auto computePrice = [&](const std::vector<Real>& depoRatesIn,
+                                        const std::vector<Real>& swapRatesIn) -> Real
                 {
-                    // Build curve with plain doubles
                     RelinkableHandle<YieldTermStructure> euriborTS;
                     auto euribor6m = ext::make_shared<Euribor6M>(euriborTS);
                     euribor6m->addFixing(Date(2, September, 2005), 0.04);
@@ -389,17 +385,17 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
                     yieldCurve->enableExtrapolation();
 
                     std::vector<Date> curveDates;
-                    std::vector<double> zeroRates;
+                    std::vector<Real> zeroRatesVec;
                     curveDates.push_back(settlementDate);
-                    zeroRates.push_back(value(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate()));
+                    zeroRatesVec.push_back(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate());
                     Date endDate = settlementDate + config.curveEndYears * Years;
                     curveDates.push_back(endDate);
-                    zeroRates.push_back(value(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate()));
+                    zeroRatesVec.push_back(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate());
 
                     RelinkableHandle<YieldTermStructure> termStructure;
                     ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
                     index->addFixing(Date(2, September, 2005), 0.04);
-                    termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates, dayCounter));
+                    termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRatesVec, dayCounter));
 
                     ext::shared_ptr<LiborForwardModelProcess> process(
                         new LiborForwardModelProcess(config.size, index));
@@ -414,16 +410,16 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
                                         schedule, index, 0.0, index->dayCounter()));
                     fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
                         index->forwardingTermStructure()));
-                    double swapRate = value(fwdSwap->fairRate());
+                    Real swapRateFD = fwdSwap->fairRate();
 
                     Array initRates = process->initialValues();
 
                     // MC simulation
-                    double price = 0.0;
+                    Real price = 0.0;
                     for (Size n = 0; n < nrTrails; ++n)
                     {
                         Array asset(config.size);
-                        for (Size k = 0; k < config.size; ++k) asset[k] = value(initRates[k]);
+                        for (Size k = 0; k < config.size; ++k) asset[k] = initRates[k];
 
                         Array assetAtExercise(config.size);
                         for (Size step = 1; step <= fullGridSteps; ++step)
@@ -447,42 +443,46 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
 
                         // Discount factors
                         Array dis(config.size);
-                        double df = 1.0;
+                        Real df = 1.0;
                         for (Size k = 0; k < config.size; ++k)
                         {
-                            double accrual = accrualEnd[k] - accrualStart[k];
-                            df = df / (1.0 + value(assetAtExercise[k]) * accrual);
+                            Real accrual = accrualEnd[k] - accrualStart[k];
+                            df = df / (1.0 + assetAtExercise[k] * accrual);
                             dis[k] = df;
                         }
 
                         // NPV
-                        double npv = 0.0;
+                        Real npv = 0.0;
                         for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
                         {
-                            double accrual = accrualEnd[m] - accrualStart[m];
-                            npv += (swapRate - value(assetAtExercise[m])) * accrual * value(dis[m]);
+                            Real accrual = accrualEnd[m] - accrualStart[m];
+                            npv += (swapRateFD - assetAtExercise[m]) * accrual * dis[m];
                         }
-                        price += std::max(npv, 0.0);
+                        price += std::max(value(npv), 0.0);
                     }
-                    return price / static_cast<double>(nrTrails);
+                    return price / static_cast<Real>(nrTrails);
                 };
 
+                // Convert config rates to Real vectors
+                std::vector<Real> baseDepoRates(config.depoRates.begin(), config.depoRates.end());
+                std::vector<Real> baseSwapRates(config.swapRates.begin(), config.swapRates.end());
+
                 // Base price
-                double basePrice = computePrice(config.depoRates, config.swapRates);
+                Real basePrice = computePrice(baseDepoRates, baseSwapRates);
 
                 // Bump each market quote and compute derivative
-                std::vector<double> derivatives(numMarketQuotes);
-                for (Size q = 0; q < numMarketQuotes; ++q)
+                std::vector<Real> derivatives(fdNumMarketQuotes);
+                for (Size q = 0; q < fdNumMarketQuotes; ++q)
                 {
-                    std::vector<double> bumpedDepo = config.depoRates;
-                    std::vector<double> bumpedSwap = config.swapRates;
+                    std::vector<Real> bumpedDepo = baseDepoRates;
+                    std::vector<Real> bumpedSwap = baseSwapRates;
 
                     if (q < config.numDeposits)
                         bumpedDepo[q] += eps;
                     else
                         bumpedSwap[q - config.numDeposits] += eps;
 
-                    double bumpedPrice = computePrice(bumpedDepo, bumpedSwap);
+                    Real bumpedPrice = computePrice(bumpedDepo, bumpedSwap);
                     derivatives[q] = (bumpedPrice - basePrice) / eps;
                 }
 
@@ -637,6 +637,10 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             }
 
 #if defined(QLRISKS_HAS_FORGE)
+            // Variables used by JIT sections
+            Size numMarketQuotes = config.numDeposits + config.numSwaps;
+            Size numIntermediates = config.size + 1;
+
             // =================================================================
             // JIT Scalar approach (ForgeBackend)
             // =================================================================
@@ -1244,15 +1248,14 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
 
 void runDecomposition(const BenchmarkConfig& config)
 {
-    using Clock = std::chrono::high_resolution_clock;
-    using Duration = std::chrono::duration<double, std::milli>;
-
     std::cout << "\n";
     std::cout << std::string(80, '=') << "\n";
     std::cout << "  PERFORMANCE DECOMPOSITION (1K paths)\n";
     std::cout << std::string(80, '=') << "\n";
 
 #if defined(QLRISKS_HAS_FORGE)
+    using Clock = std::chrono::high_resolution_clock;
+    using Duration = std::chrono::duration<double, std::milli>;
     // Setup (simplified version for decomposition)
     Calendar calendar = TARGET();
     Date todaysDate(4, September, 2005);

@@ -1091,6 +1091,16 @@ jobs:
           }
           EOFCPP
 
+      - name: Add benchmark target to QuantLib CMakeLists
+        run: |
+          # Add standalone benchmark target to QuantLib's CMakeLists.txt
+          cat >> QuantLib/CMakeLists.txt << 'EOF'
+
+          # Plain double benchmark for type overhead comparison
+          add_executable(benchmark_double test-suite-double/benchmark_double.cpp)
+          target_link_libraries(benchmark_double PRIVATE ql_library ${QL_THREAD_LIBRARIES})
+          EOF
+
       - name: Configure QuantLib (plain double)
         run: |
           cd QuantLib
@@ -1102,19 +1112,10 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF
 
-      - name: Build QuantLib (plain double)
+      - name: Build QuantLib and benchmark (plain double)
         run: |
           cd QuantLib/build-double
-          cmake --build .
-
-      - name: Build benchmark (plain double)
-        run: |
-          cd QuantLib/build-double
-          # Include both source dir (..) and build dir (.) for generated headers like mathconstants.hpp
-          g++ -O3 -std=c++17 -I.. -I. \
-            ../test-suite-double/benchmark_double.cpp \
-            -L. -lQuantLib -lpthread \
-            -o benchmark_double
+          cmake --build . --target benchmark_double
 
       # =========================================================================
       # Build 2: QuantLib-Risks with xad::AReal<double>
@@ -1433,6 +1434,18 @@ jobs:
           }
           '@ | Out-File -FilePath "QuantLib/test-suite-double/benchmark_double.cpp" -Encoding utf8
 
+      - name: Add benchmark target to QuantLib CMakeLists
+        shell: pwsh
+        run: |
+          # Add standalone benchmark target to QuantLib's CMakeLists.txt
+          $cmakeAddition = @"
+
+          # Plain double benchmark for type overhead comparison
+          add_executable(benchmark_double test-suite-double/benchmark_double.cpp)
+          target_link_libraries(benchmark_double PRIVATE ql_library `${QL_THREAD_LIBRARIES})
+          "@
+          Add-Content -Path "QuantLib/CMakeLists.txt" -Value $cmakeAddition
+
       - name: Configure QuantLib (plain double)
         shell: cmd
         run: |
@@ -1445,20 +1458,12 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF ^
             -DQL_BUILD_BENCHMARK=OFF
 
-      - name: Build QuantLib (plain double)
+      - name: Build QuantLib and benchmark (plain double)
         shell: cmd
         run: |
           cd QuantLib\build-double
           call "%VSVARSALL%" amd64
-          cmake --build . --config Release
-
-      - name: Build benchmark (plain double)
-        shell: cmd
-        run: |
-          cd QuantLib\build-double
-          call "%VSVARSALL%" amd64
-          REM Include both source dir (..) and build dir (.) for generated headers like mathconstants.hpp
-          cl /O2 /EHsc /std:c++17 /I.. /I. ..\test-suite-double\benchmark_double.cpp QuantLib.lib /Fe:benchmark_double.exe
+          cmake --build . --target benchmark_double --config Release
 
       # =========================================================================
       # Build 2: QuantLib-Risks with xad::AReal<double>
