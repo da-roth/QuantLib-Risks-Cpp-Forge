@@ -78,12 +78,17 @@ using platform_info::getMemoryInfo;
 using platform_info::getPlatformInfo;
 using platform_info::getSimdInfo;
 
+// Overload value() for plain double (for consistency with utilities_xad.hpp)
+inline double value(double x) { return x; }
+
 // ============================================================================
 // XAD Type Definitions
 // ============================================================================
 
-using Real = xad::AD<xad::AReal<double>>;
-using tape_type = Real::tape_type;
+// Note: QuantLib's Real is already defined as xad::AReal<double> via qlrisks.hpp
+// (via #define QL_REAL xad::AReal<double> in qlrisks.hpp)
+// We use QuantLib::Real directly through "using namespace QuantLib"
+// The tape_type is accessed as Real::tape_type where needed
 
 // ============================================================================
 // Statistics Helpers
@@ -343,6 +348,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             {
                 auto t_start = Clock::now();
 
+                using tape_type = Real::tape_type;
                 tape_type tape;
 
                 std::vector<Real> depositRates(config.numDeposits);
@@ -482,6 +488,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             {
                 auto t_start = Clock::now();
 
+                using tape_type = Real::tape_type;
                 tape_type tape;
 
                 std::vector<Real> depositRates(config.numDeposits);
@@ -716,6 +723,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             {
                 auto t_start = Clock::now();
 
+                using tape_type = Real::tape_type;
                 tape_type tape;
 
                 std::vector<Real> depositRates(config.numDeposits);
@@ -1229,7 +1237,6 @@ void runDecomposition(const BenchmarkConfig& config)
     // Time each phase
     double setInputTime = 0.0;
     double forwardTime = 0.0;
-    double backwardTime = 0.0;
     double accumulateTime = 0.0;
 
     Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
