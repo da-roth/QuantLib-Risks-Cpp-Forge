@@ -164,6 +164,9 @@ inline void applyChainRule(const double* __restrict jacobian,
 // Benchmark Configuration
 // ============================================================================
 
+// Maximum paths for finite differences (FD is O(n) per path for n parameters)
+constexpr int FD_MAX_PATHS = 1000;
+
 struct BenchmarkConfig
 {
     // Market data
@@ -197,7 +200,7 @@ struct BenchmarkConfig
         swapTenors = {1 * Years, 2 * Years, 3 * Years, 4 * Years, 5 * Years};
         depoRates = {0.0350, 0.0365, 0.0380, 0.0400};
         swapRates = {0.0420, 0.0480, 0.0520, 0.0550, 0.0575};
-        pathCounts = {10, 100, 1000, 10000};
+        pathCounts = {10, 100, 1000, 10000, 100000};
     }
 
     // Configure for larger swaption (5Y into 5Y)
@@ -231,9 +234,11 @@ struct BenchmarkConfig
 
 struct TimingResult
 {
-    double xad_mean = 0, xad_std = 0;
-    double jit_mean = 0, jit_std = 0;
-    double jit_avx_mean = 0, jit_avx_std = 0;
+    double fd_mean = 0, fd_std = 0;       // Finite differences (bump-and-revalue)
+    double xad_mean = 0, xad_std = 0;     // XAD tape-based AAD
+    double jit_mean = 0, jit_std = 0;     // Forge JIT scalar
+    double jit_avx_mean = 0, jit_avx_std = 0;  // Forge JIT AVX2
+    bool fd_enabled = false;              // Whether FD was run for this path count
 };
 
 // ============================================================================
@@ -336,11 +341,161 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
             std::cout << config.pathCounts[tc];
         std::cout << " paths " << std::flush;
 
-        std::vector<double> xad_times, jit_times, jit_avx_times;
+        std::vector<double> fd_times, xad_times, jit_times, jit_avx_times;
+        bool runFD = (config.pathCounts[tc] <= FD_MAX_PATHS);
 
         for (size_t iter = 0; iter < config.warmupIterations + config.benchmarkIterations; ++iter)
         {
             bool recordTiming = (iter >= config.warmupIterations);
+
+            // =================================================================
+            // Finite Differences (bump-and-revalue) - only for small path counts
+            // =================================================================
+            if (runFD)
+            {
+                auto t_start = Clock::now();
+
+                Size numMarketQuotes = config.numDeposits + config.numSwaps;
+                double eps = 1e-5;
+
+                // Base price computation function (no AD)
+                auto computePrice = [&](const std::vector<double>& depoRatesIn,
+                                        const std::vector<double>& swapRatesIn) -> double
+                {
+                    // Build curve with plain doubles
+                    RelinkableHandle<YieldTermStructure> euriborTS;
+                    auto euribor6m = ext::make_shared<Euribor6M>(euriborTS);
+                    euribor6m->addFixing(Date(2, September, 2005), 0.04);
+
+                    std::vector<ext::shared_ptr<RateHelper>> instruments;
+                    for (Size idx = 0; idx < config.numDeposits; ++idx)
+                    {
+                        auto depoQuote = ext::make_shared<SimpleQuote>(depoRatesIn[idx]);
+                        instruments.push_back(ext::make_shared<DepositRateHelper>(
+                            Handle<Quote>(depoQuote), config.depoTenors[idx], fixingDays,
+                            calendar, ModifiedFollowing, true, dayCounter));
+                    }
+                    for (Size idx = 0; idx < config.numSwaps; ++idx)
+                    {
+                        auto swapQuote = ext::make_shared<SimpleQuote>(swapRatesIn[idx]);
+                        instruments.push_back(ext::make_shared<SwapRateHelper>(
+                            Handle<Quote>(swapQuote), config.swapTenors[idx],
+                            calendar, Annual, Unadjusted, Thirty360(Thirty360::BondBasis),
+                            euribor6m));
+                    }
+
+                    auto yieldCurve = ext::make_shared<PiecewiseYieldCurve<ZeroYield, Linear>>(
+                        settlementDate, instruments, dayCounter);
+                    yieldCurve->enableExtrapolation();
+
+                    std::vector<Date> curveDates;
+                    std::vector<double> zeroRates;
+                    curveDates.push_back(settlementDate);
+                    zeroRates.push_back(value(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate()));
+                    Date endDate = settlementDate + config.curveEndYears * Years;
+                    curveDates.push_back(endDate);
+                    zeroRates.push_back(value(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate()));
+
+                    RelinkableHandle<YieldTermStructure> termStructure;
+                    ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+                    index->addFixing(Date(2, September, 2005), 0.04);
+                    termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates, dayCounter));
+
+                    ext::shared_ptr<LiborForwardModelProcess> process(
+                        new LiborForwardModelProcess(config.size, index));
+                    process->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+                        new LfmCovarianceProxy(
+                            ext::make_shared<LmLinearExponentialVolatilityModel>(process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                            ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
+
+                    ext::shared_ptr<VanillaSwap> fwdSwap(
+                        new VanillaSwap(Swap::Receiver, 1.0,
+                                        schedule, 0.05, dayCounter,
+                                        schedule, index, 0.0, index->dayCounter()));
+                    fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+                        index->forwardingTermStructure()));
+                    double swapRate = value(fwdSwap->fairRate());
+
+                    Array initRates = process->initialValues();
+
+                    // MC simulation
+                    double price = 0.0;
+                    for (Size n = 0; n < nrTrails; ++n)
+                    {
+                        Array asset(config.size);
+                        for (Size k = 0; k < config.size; ++k) asset[k] = value(initRates[k]);
+
+                        Array assetAtExercise(config.size);
+                        for (Size step = 1; step <= fullGridSteps; ++step)
+                        {
+                            Size offset = (step - 1) * numFactors;
+                            Time t = grid[step - 1];
+                            Time dt = grid.dt(step - 1);
+
+                            Array dw(numFactors);
+                            for (Size f = 0; f < numFactors; ++f)
+                                dw[f] = allRandoms[n][offset + f];
+
+                            asset = process->evolve(t, asset, dt, dw);
+
+                            if (step == exerciseStep)
+                            {
+                                for (Size k = 0; k < config.size; ++k)
+                                    assetAtExercise[k] = asset[k];
+                            }
+                        }
+
+                        // Discount factors
+                        Array dis(config.size);
+                        double df = 1.0;
+                        for (Size k = 0; k < config.size; ++k)
+                        {
+                            double accrual = accrualEnd[k] - accrualStart[k];
+                            df = df / (1.0 + value(assetAtExercise[k]) * accrual);
+                            dis[k] = df;
+                        }
+
+                        // NPV
+                        double npv = 0.0;
+                        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+                        {
+                            double accrual = accrualEnd[m] - accrualStart[m];
+                            npv += (swapRate - value(assetAtExercise[m])) * accrual * value(dis[m]);
+                        }
+                        price += std::max(npv, 0.0);
+                    }
+                    return price / static_cast<double>(nrTrails);
+                };
+
+                // Base price
+                double basePrice = computePrice(config.depoRates, config.swapRates);
+
+                // Bump each market quote and compute derivative
+                std::vector<double> derivatives(numMarketQuotes);
+                for (Size q = 0; q < numMarketQuotes; ++q)
+                {
+                    std::vector<double> bumpedDepo = config.depoRates;
+                    std::vector<double> bumpedSwap = config.swapRates;
+
+                    if (q < config.numDeposits)
+                        bumpedDepo[q] += eps;
+                    else
+                        bumpedSwap[q - config.numDeposits] += eps;
+
+                    double bumpedPrice = computePrice(bumpedDepo, bumpedSwap);
+                    derivatives[q] = (bumpedPrice - basePrice) / eps;
+                }
+
+                auto t_end = Clock::now();
+                if (recordTiming)
+                {
+                    fd_times.push_back(Duration(t_end - t_start).count());
+                }
+
+                // Suppress unused variable warning
+                (void)basePrice;
+                (void)derivatives;
+            }
 
             // =================================================================
             // XAD Tape-based approach (direct evolve)
@@ -996,6 +1151,14 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
 #endif // QLRISKS_HAS_FORGE
         }
 
+        // Store FD results
+        if (runFD)
+        {
+            results[tc].fd_mean = computeMean(fd_times);
+            results[tc].fd_std = computeStddev(fd_times);
+            results[tc].fd_enabled = true;
+        }
+
         results[tc].xad_mean = computeMean(xad_times);
         results[tc].xad_std = computeStddev(xad_times);
 #if defined(QLRISKS_HAS_FORGE)
@@ -1028,14 +1191,32 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
 
         std::cout << std::fixed << std::setprecision(1);
 
-        std::cout << "| " << std::setw(6) << pathLabel << " |       XAD |"
-                  << std::setw(9) << results[tc].xad_mean << " |"
-                  << std::setw(9) << results[tc].xad_std << " |     --- |\n";
+        // FD results (only for small path counts)
+        if (results[tc].fd_enabled)
+        {
+            std::cout << "| " << std::setw(6) << pathLabel << " |        FD |"
+                      << std::setw(9) << results[tc].fd_mean << " |"
+                      << std::setw(9) << results[tc].fd_std << " |     --- |\n";
+
+            double xad_speedup_vs_fd = results[tc].fd_mean / results[tc].xad_mean;
+            std::cout << "|        |       XAD |"
+                      << std::setw(9) << results[tc].xad_mean << " |"
+                      << std::setw(9) << results[tc].xad_std << " |"
+                      << std::setw(7) << std::setprecision(2) << xad_speedup_vs_fd << "x |\n";
+        }
+        else
+        {
+            std::cout << "| " << std::setw(6) << pathLabel << " |       XAD |"
+                      << std::setw(9) << results[tc].xad_mean << " |"
+                      << std::setw(9) << results[tc].xad_std << " |     --- |\n";
+        }
 
 #if defined(QLRISKS_HAS_FORGE)
-        double jit_speedup = results[tc].xad_mean / results[tc].jit_mean;
-        double avx_speedup = results[tc].xad_mean / results[tc].jit_avx_mean;
+        double baseline = results[tc].fd_enabled ? results[tc].fd_mean : results[tc].xad_mean;
+        double jit_speedup = baseline / results[tc].jit_mean;
+        double avx_speedup = baseline / results[tc].jit_avx_mean;
 
+        std::cout << std::setprecision(1);
         std::cout << "|        |       JIT |"
                   << std::setw(9) << results[tc].jit_mean << " |"
                   << std::setw(9) << results[tc].jit_std << " |"
@@ -1052,7 +1233,8 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
     }
 
     std::cout << "\n";
-    std::cout << "  Speedup = XAD / Method. All times in ms.\n";
+    std::cout << "  Speedup = FD / Method (or XAD / Method when FD not available). All times in ms.\n";
+    std::cout << "  FD only runs for paths <= " << FD_MAX_PATHS << " due to O(n) cost per path.\n";
     std::cout << "\n";
 }
 
@@ -1373,6 +1555,7 @@ void runSingleBenchmark(const BenchmarkConfig& config, bool quickMode)
 
     std::cout << "\n  METHODS\n";
     std::cout << std::string(80, '-') << "\n";
+    std::cout << "  FD       Finite Differences (bump-and-revalue, paths <= " << FD_MAX_PATHS << " only)\n";
     std::cout << "  XAD      XAD tape-based reverse-mode AAD\n";
 #if defined(QLRISKS_HAS_FORGE)
     std::cout << "  JIT      Forge JIT-compiled native code\n";
