@@ -1,0 +1,684 @@
+##############################################################################
+#
+#  QuantLib-Risks Benchmarks - JIT Backends
+#
+#  Compares different JIT configurations for Swaption pricing:
+#  - JIT=OFF:              XAD tape-based AAD (baseline)
+#  - JIT=ON, ForgeBackend: XAD + Forge JIT + JIT-AVX
+#
+#  Dependencies:
+#  - QuantLib (lballabio/QuantLib)
+#  - XAD with JIT (auto-differentiation/xad)
+#  - xad-forge (da-roth/xad-forge)
+#  - Forge C API (da-roth/forge)
+#
+#  Copyright (C) 2025 Xcelerit Computing Limited
+#  SPDX-License-Identifier: AGPL-3.0-or-later
+#
+##############################################################################
+
+name: Benchmarks
+
+on:
+  push:
+    paths:
+      - 'test-suite/swaption_benchmark*.cpp'
+      - 'test-suite/benchmark_utils.hpp'
+      - '.github/workflows/benchmarks.yaml'
+  pull_request:
+    paths:
+      - 'test-suite/swaption_benchmark*.cpp'
+      - 'test-suite/benchmark_utils.hpp'
+      - '.github/workflows/benchmarks.yaml'
+  workflow_dispatch:
+    inputs:
+      jit_mode:
+        description: 'JIT Mode'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'off'
+          - 'on'
+          - 'all'
+      ql_repo:
+        description: 'QuantLib repository'
+        required: false
+        default: 'lballabio/QuantLib'
+      ql_branch:
+        description: 'QuantLib branch'
+        required: false
+        default: 'master'
+      xad_repo:
+        description: 'XAD repository'
+        required: false
+        default: 'auto-differentiation/xad'
+      xad_branch:
+        description: 'XAD branch'
+        required: false
+        default: 'main'
+      forge_repo:
+        description: 'Forge repository'
+        required: false
+        default: 'da-roth/forge'
+      forge_branch:
+        description: 'Forge branch'
+        required: false
+        default: 'main'
+      xad_forge_repo:
+        description: 'xad-forge repository'
+        required: false
+        default: 'da-roth/xad-forge'
+      xad_forge_branch:
+        description: 'xad-forge branch'
+        required: false
+        default: 'main'
+
+env:
+  QL_REPO: ${{ github.event.inputs.ql_repo || 'lballabio/QuantLib' }}
+  QL_BRANCH: ${{ github.event.inputs.ql_branch || 'master' }}
+  XAD_REPO: ${{ github.event.inputs.xad_repo || 'auto-differentiation/xad' }}
+  XAD_BRANCH: ${{ github.event.inputs.xad_branch || 'main' }}
+  FORGE_REPO: ${{ github.event.inputs.forge_repo || 'da-roth/forge' }}
+  FORGE_BRANCH: ${{ github.event.inputs.forge_branch || 'main' }}
+  XAD_FORGE_REPO: ${{ github.event.inputs.xad_forge_repo || 'da-roth/xad-forge' }}
+  XAD_FORGE_BRANCH: ${{ github.event.inputs.xad_forge_branch || 'main' }}
+
+jobs:
+  ##############################################################################
+  # Linux Benchmarks
+  ##############################################################################
+  linux:
+    name: Linux, JIT=${{ matrix.jit }}${{ matrix.jit == 'on' && ', ForgeBackend' || '' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/lballabio/quantlib-devenv:rolling
+
+    strategy:
+      fail-fast: false
+      matrix:
+        jit:
+          - 'off'
+          - 'on'
+        include:
+          - jit: 'off'
+            xad_jit: 'OFF'
+            forge: false
+          - jit: 'on'
+            xad_jit: 'ON'
+            forge: true
+        exclude:
+          - jit: ${{ github.event.inputs.jit_mode == 'off' && 'on' || '' }}
+          - jit: ${{ github.event.inputs.jit_mode == 'on' && 'off' || '' }}
+
+    steps:
+      - name: Hardware Info
+        run: |
+          echo "===== CPU ====="
+          lscpu | grep -E "^(Model name|CPU\(s\)|Thread|Core|Socket|CPU max MHz)"
+          echo "===== Memory ====="
+          free -h
+
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        if: matrix.forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        if: matrix.forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-benchmark-jit-${{ matrix.jit }}
+          max-size: 650M
+
+      # --- ForgeBackend build steps ---
+      - name: Build Forge C API
+        if: matrix.forge
+        run: |
+          cd forge
+          cmake -B build -S api/c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFORGE_CAPI_BUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
+          cmake --build build
+          cmake --install build
+
+      - name: Configure QuantLib (JIT OFF)
+        if: ${{ !matrix.forge }}
+        run: |
+          cd QuantLib
+          cmake -B build -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=OFF \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=OFF
+
+      - name: Configure QuantLib (JIT ON, ForgeBackend)
+        if: matrix.forge
+        run: |
+          cd QuantLib
+          cmake -B build -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=ON \
+            -DCMAKE_PREFIX_PATH=$(pwd)/../install \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
+            -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Build
+        run: |
+          cd QuantLib/build
+          cmake --build .
+
+      - name: Run Benchmark
+        run: |
+          cd QuantLib/build
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+
+  ##############################################################################
+  # Windows Benchmarks
+  ##############################################################################
+  windows:
+    name: Windows, JIT=${{ matrix.jit }}${{ matrix.jit == 'on' && ', ForgeBackend' || '' }}
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        jit:
+          - 'off'
+          - 'on'
+        include:
+          - jit: 'off'
+            xad_jit: 'OFF'
+            forge: false
+          - jit: 'on'
+            xad_jit: 'ON'
+            forge: true
+        exclude:
+          - jit: ${{ github.event.inputs.jit_mode == 'off' && 'on' || '' }}
+          - jit: ${{ github.event.inputs.jit_mode == 'on' && 'off' || '' }}
+
+    env:
+      VSVARSALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+    steps:
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        if: matrix.forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        if: matrix.forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: choco install -y ninja
+
+      - name: Setup Boost
+        run: |
+          $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.86.0/boost_1_86_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+          echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
+
+      # --- ForgeBackend build steps ---
+      - name: Build Forge C API
+        if: matrix.forge
+        shell: cmd
+        run: |
+          cd forge
+          call "%VSVARSALL%" amd64
+          cmake -B build -S api/c -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DFORGE_CAPI_BUILD_TESTS=OFF ^
+            -DFORGE_CAPI_USE_STATIC_RUNTIME=ON ^
+            -DCMAKE_INSTALL_PREFIX="%cd%\..\install"
+          cmake --build build
+          cmake --install build
+
+      - name: Configure QuantLib (JIT OFF)
+        if: ${{ !matrix.forge }}
+        shell: cmd
+        run: |
+          cd QuantLib
+          call "%VSVARSALL%" amd64
+          cmake -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=OFF ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_ENABLE_FORGE=OFF ^
+            -DQLRISKS_BUILD_TEST_SUITE=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK=ON ^
+            -DQLRISKS_ENABLE_FORGE_TESTS=OFF
+
+      - name: Configure QuantLib (JIT ON, ForgeBackend)
+        if: matrix.forge
+        shell: cmd
+        run: |
+          cd QuantLib
+          call "%VSVARSALL%" amd64
+          cmake -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=ON ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DCMAKE_PREFIX_PATH="%cd%\..\install" ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_ENABLE_FORGE=ON ^
+            -DQLRISKS_USE_FORGE_CAPI=ON ^
+            -DXAD_FORGE_USE_CAPI=ON ^
+            -DQLRISKS_BUILD_TEST_SUITE=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK=ON ^
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          call "%VSVARSALL%" amd64
+          cmake --build . --config Release
+
+      - name: Run Benchmark
+        shell: cmd
+        run: |
+          cd QuantLib\build
+          set PATH=%cd%\..\..\install\bin;%PATH%
+          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-benchmark.exe --log_level=message
+
+  ##############################################################################
+  # Performance Decomposition - Detailed timing breakdown
+  ##############################################################################
+  decomposition:
+    name: Performance Decomposition (Linux)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/lballabio/quantlib-devenv:rolling
+    if: github.event.inputs.jit_mode != 'off'
+
+    steps:
+      - name: Hardware Info
+        run: |
+          echo "===== CPU ====="
+          lscpu | grep -E "^(Model name|CPU\(s\)|Thread|Core|Socket|CPU max MHz)"
+          echo "===== Memory ====="
+          free -h
+
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-benchmark-decomposition
+          max-size: 650M
+
+      - name: Build Forge C API
+        run: |
+          cd forge
+          cmake -B build -S api/c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFORGE_CAPI_BUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
+          cmake --build build
+          cmake --install build
+
+      - name: Configure QuantLib
+        run: |
+          cd QuantLib
+          cmake -B build -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=ON \
+            -DCMAKE_PREFIX_PATH=$(pwd)/../install \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
+            -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Build
+        run: |
+          cd QuantLib/build
+          cmake --build .
+
+      # TODO: Once standalone benchmark with --decomposition is implemented,
+      # change this to run with --decomposition flag
+      - name: Run Performance Decomposition
+        run: |
+          cd QuantLib/build
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+
+  ##############################################################################
+  # Compare Forge vs No-Forge - Statistical comparison
+  ##############################################################################
+  compare:
+    name: Compare Forge vs No-Forge
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/lballabio/quantlib-devenv:rolling
+
+    steps:
+      - name: Hardware Info
+        run: |
+          echo "===== CPU ====="
+          lscpu | grep -E "^(Model name|CPU\(s\)|Thread|Core|Socket|CPU max MHz)"
+          echo "===== Memory ====="
+          free -h
+
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake bc datamash
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-benchmark-compare
+          max-size: 650M
+
+      # --- Build Forge OFF version ---
+      - name: Configure QuantLib (Forge OFF)
+        run: |
+          cd QuantLib
+          cmake -B build-off -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=OFF \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=OFF
+
+      - name: Build (Forge OFF)
+        run: |
+          cd QuantLib/build-off
+          cmake --build .
+
+      # --- Build Forge ON version ---
+      - name: Build Forge C API
+        run: |
+          cd forge
+          cmake -B build -S api/c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFORGE_CAPI_BUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
+          cmake --build build
+          cmake --install build
+
+      - name: Configure QuantLib (Forge ON)
+        run: |
+          cd QuantLib
+          cmake -B build-on -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=ON \
+            -DCMAKE_PREFIX_PATH=$(pwd)/../install \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
+            -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Build (Forge ON)
+        run: |
+          cd QuantLib/build-on
+          cmake --build .
+
+      # --- Run benchmarks multiple times ---
+      - name: Run Benchmark (Forge OFF)
+        run: |
+          set -e
+          cd QuantLib/build-off
+          # warmup run
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          rm -f benchmark_off.log || true
+          for i in $(seq 1 5) ; do \
+            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message | tee -a benchmark_off.log ; \
+          done
+
+      - name: Run Benchmark (Forge ON)
+        run: |
+          set -e
+          cd QuantLib/build-on
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          # warmup run
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          rm -f benchmark_on.log || true
+          for i in $(seq 1 5) ; do \
+            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message | tee -a benchmark_on.log ; \
+          done
+
+      # TODO: Update parsing once output format matches xad-jit style
+      - name: Compare Results
+        id: compare
+        run: |
+          set -e
+
+          echo "## Benchmark Results: Forge OFF vs ON" > benchmark_results.md
+          echo "" >> benchmark_results.md
+          echo "Comparing QuantLib-Risks built without vs with Forge JIT backend." >> benchmark_results.md
+          echo "" >> benchmark_results.md
+          echo "- Commit: \`${{ github.sha }}\`" >> benchmark_results.md
+          echo "- Runs: 5 (after warmup)" >> benchmark_results.md
+          echo "" >> benchmark_results.md
+
+          echo "### Benchmark Logs" >> benchmark_results.md
+          echo "" >> benchmark_results.md
+          echo "**Forge OFF output (last run):**" >> benchmark_results.md
+          echo "\`\`\`" >> benchmark_results.md
+          tail -50 QuantLib/build-off/benchmark_off.log >> benchmark_results.md || echo "No log available" >> benchmark_results.md
+          echo "\`\`\`" >> benchmark_results.md
+          echo "" >> benchmark_results.md
+          echo "**Forge ON output (last run):**" >> benchmark_results.md
+          echo "\`\`\`" >> benchmark_results.md
+          tail -50 QuantLib/build-on/benchmark_on.log >> benchmark_results.md || echo "No log available" >> benchmark_results.md
+          echo "\`\`\`" >> benchmark_results.md
+
+          cat benchmark_results.md
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-compare
+          path: benchmark_results.md
