@@ -1110,7 +1110,8 @@ jobs:
       - name: Build benchmark (plain double)
         run: |
           cd QuantLib/build-double
-          g++ -O3 -std=c++17 -I../.. -I. \
+          # Include both source dir (..) and build dir (.) for generated headers like mathconstants.hpp
+          g++ -O3 -std=c++17 -I.. -I. \
             ../test-suite-double/benchmark_double.cpp \
             -L. -lQuantLib -lpthread \
             -o benchmark_double
@@ -1456,7 +1457,8 @@ jobs:
         run: |
           cd QuantLib\build-double
           call "%VSVARSALL%" amd64
-          cl /O2 /EHsc /std:c++17 /I..\.. /I. ..\test-suite-double\benchmark_double.cpp QuantLib.lib /Fe:benchmark_double.exe
+          REM Include both source dir (..) and build dir (.) for generated headers like mathconstants.hpp
+          cl /O2 /EHsc /std:c++17 /I.. /I. ..\test-suite-double\benchmark_double.cpp QuantLib.lib /Fe:benchmark_double.exe
 
       # =========================================================================
       # Build 2: QuantLib-Risks with xad::AReal<double>
