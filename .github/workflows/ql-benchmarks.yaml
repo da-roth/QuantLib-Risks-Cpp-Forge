@@ -17,19 +17,21 @@
 #
 ##############################################################################
 
-name: Benchmarks
+name: QL Benchmarks
 
 on:
   push:
     paths:
       - 'test-suite/swaption_benchmark*.cpp'
+      - 'test-suite/benchmark_main.cpp'
       - 'test-suite/benchmark_utils.hpp'
-      - '.github/workflows/benchmarks.yaml'
+      - '.github/workflows/ql-benchmarks.yaml'
   pull_request:
     paths:
       - 'test-suite/swaption_benchmark*.cpp'
+      - 'test-suite/benchmark_main.cpp'
       - 'test-suite/benchmark_utils.hpp'
-      - '.github/workflows/benchmarks.yaml'
+      - '.github/workflows/ql-benchmarks.yaml'
   workflow_dispatch:
     inputs:
       jit_mode:

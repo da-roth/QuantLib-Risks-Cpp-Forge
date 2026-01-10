@@ -16,8 +16,11 @@
    Options:
      --help, -h        Show this help message
      --quick           Run quick benchmark (fewer iterations, fewer path counts)
-     --large           Run larger swaption benchmark (5Y into 5Y instead of 1Y into 1Y)
+     --small-only      Run only the small swaption benchmark (1Y into 1Y)
+     --large-only      Run only the large swaption benchmark (5Y into 5Y)
      --decomposition   Run performance decomposition analysis
+
+   By default, runs both small (1Y into 1Y) and large (5Y into 5Y) benchmarks.
 
    Copyright (C) 2025 Xcelerit Computing Limited
 
@@ -1322,11 +1325,12 @@ void printUsage(const char* progName)
     std::cout << "Options:\n";
     std::cout << "  --help, -h        Show this help message\n";
     std::cout << "  --quick           Run quick benchmark (fewer iterations, fewer path counts)\n";
-    std::cout << "  --large           Run larger swaption benchmark (5Y into 5Y instead of 1Y into 1Y)\n";
+    std::cout << "  --small-only      Run only the small swaption benchmark (1Y into 1Y)\n";
+    std::cout << "  --large-only      Run only the large swaption benchmark (5Y into 5Y)\n";
     std::cout << "  --decomposition   Run performance decomposition analysis\n";
-    std::cout << "\nBenchmarks:\n";
-    std::cout << "  Default:  1Y into 1Y swaption (10 forward rates, 8 time steps)\n";
-    std::cout << "  Large:    5Y into 5Y swaption (20 forward rates, 20 time steps)\n";
+    std::cout << "\nBenchmarks (both run by default):\n";
+    std::cout << "  Small:  1Y into 1Y swaption (10 forward rates, 8 time steps)\n";
+    std::cout << "  Large:  5Y into 5Y swaption (20 forward rates, 20 time steps)\n";
     std::cout << "\nThis benchmark compares AD approaches for swaption pricing.\n";
 #if defined(QLRISKS_HAS_FORGE)
     std::cout << "Build: With Forge JIT support\n";
@@ -1335,10 +1339,53 @@ void printUsage(const char* progName)
 #endif
 }
 
+void runSingleBenchmark(const BenchmarkConfig& config, bool quickMode)
+{
+    std::cout << "\n  INSTRUMENT\n";
+    std::cout << std::string(80, '-') << "\n";
+    std::cout << "  Instrument:   " << config.instrumentDesc << "\n";
+    std::cout << "  Model:        LIBOR Market Model (LMM)\n";
+    std::cout << "  Forward rates:" << config.size << " (semi-annual)\n";
+    std::cout << "  Time steps:   " << config.steps << "\n";
+    std::cout << "  Inputs:       " << (config.numDeposits + config.numSwaps) << " market quotes\n";
+
+    std::cout << "\n  BENCHMARK CONFIGURATION\n";
+    std::cout << std::string(80, '-') << "\n";
+    std::cout << "  Path counts:  ";
+    for (size_t i = 0; i < config.pathCounts.size(); ++i)
+    {
+        if (i > 0) std::cout << ", ";
+        if (config.pathCounts[i] >= 1000)
+            std::cout << (config.pathCounts[i] / 1000) << "K";
+        else
+            std::cout << config.pathCounts[i];
+    }
+    std::cout << "\n";
+    std::cout << "  Warmup:       " << config.warmupIterations << " iterations\n";
+    std::cout << "  Measured:     " << config.benchmarkIterations << " iterations\n";
+
+    std::cout << "\n  METHODS\n";
+    std::cout << std::string(80, '-') << "\n";
+    std::cout << "  XAD      XAD tape-based reverse-mode AAD\n";
+#if defined(QLRISKS_HAS_FORGE)
+    std::cout << "  JIT      Forge JIT-compiled native code\n";
+    std::cout << "  JIT-AVX  Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
+#endif
+
+    std::cout << "\n";
+    std::cout << std::string(80, '=') << "\n";
+    std::cout << "  RUNNING BENCHMARKS\n";
+    std::cout << std::string(80, '=') << "\n";
+    std::cout << "\n";
+
+    runBenchmark(config, quickMode);
+}
+
 int main(int argc, char** argv)
 {
     bool quickMode = false;
-    bool largeMode = false;
+    bool smallOnly = false;
+    bool largeOnly = false;
     bool decompositionMode = false;
 
     for (int i = 1; i < argc; ++i)
@@ -1351,26 +1398,12 @@ int main(int argc, char** argv)
         }
         else if (arg == "--quick")
             quickMode = true;
-        else if (arg == "--large")
-            largeMode = true;
+        else if (arg == "--small-only")
+            smallOnly = true;
+        else if (arg == "--large-only" || arg == "--large")
+            largeOnly = true;
         else if (arg == "--decomposition")
             decompositionMode = true;
-    }
-
-    BenchmarkConfig config;
-
-    // Apply large mode first (before quick mode adjustments)
-    if (largeMode)
-    {
-        config.setLargeConfig();
-    }
-
-    // Apply quick mode adjustments
-    if (quickMode)
-    {
-        config.pathCounts = {100, 1000};
-        config.warmupIterations = 1;
-        config.benchmarkIterations = 2;
     }
 
     // Print header
@@ -1389,52 +1422,89 @@ int main(int argc, char** argv)
 
     if (decompositionMode)
     {
-        runDecomposition(config);
+        // Run decomposition for both configs
+        BenchmarkConfig smallConfig;
+        if (quickMode)
+        {
+            smallConfig.pathCounts = {100, 1000};
+            smallConfig.warmupIterations = 1;
+            smallConfig.benchmarkIterations = 2;
+        }
+
+        if (!largeOnly)
+        {
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  DECOMPOSITION: Small Swaption (1Y into 1Y)\n";
+            std::cout << std::string(80, '=') << "\n";
+            runDecomposition(smallConfig);
+        }
+
+        if (!smallOnly)
+        {
+            BenchmarkConfig largeConfig;
+            largeConfig.setLargeConfig();
+            if (quickMode)
+            {
+                largeConfig.pathCounts = {100, 1000};
+                largeConfig.warmupIterations = 1;
+                largeConfig.benchmarkIterations = 2;
+            }
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  DECOMPOSITION: Large Swaption (5Y into 5Y)\n";
+            std::cout << std::string(80, '=') << "\n";
+            runDecomposition(largeConfig);
+        }
     }
     else
     {
-        std::cout << "\n  INSTRUMENT\n";
-        std::cout << std::string(80, '-') << "\n";
-        std::cout << "  Instrument:   " << config.instrumentDesc << "\n";
-        std::cout << "  Model:        LIBOR Market Model (LMM)\n";
-        std::cout << "  Forward rates:" << config.size << " (semi-annual)\n";
-        std::cout << "  Time steps:   " << config.steps << "\n";
-        std::cout << "  Inputs:       " << (config.numDeposits + config.numSwaps) << " market quotes\n";
+        // Run benchmarks
+        bool runSmall = !largeOnly;
+        bool runLarge = !smallOnly;
 
-        std::cout << "\n  BENCHMARK CONFIGURATION\n";
-        std::cout << std::string(80, '-') << "\n";
-        std::cout << "  Path counts:  ";
-        for (size_t i = 0; i < config.pathCounts.size(); ++i)
+        if (runSmall)
         {
-            if (i > 0) std::cout << ", ";
-            if (config.pathCounts[i] >= 1000)
-                std::cout << (config.pathCounts[i] / 1000) << "K";
-            else
-                std::cout << config.pathCounts[i];
+            BenchmarkConfig smallConfig;
+            if (quickMode)
+            {
+                smallConfig.pathCounts = {100, 1000};
+                smallConfig.warmupIterations = 1;
+                smallConfig.benchmarkIterations = 2;
+            }
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  BENCHMARK 1: Small Swaption (1Y into 1Y)\n";
+            std::cout << std::string(80, '=') << "\n";
+
+            runSingleBenchmark(smallConfig, quickMode);
         }
-        std::cout << "\n";
-        std::cout << "  Warmup:       " << config.warmupIterations << " iterations\n";
-        std::cout << "  Measured:     " << config.benchmarkIterations << " iterations\n";
 
-        std::cout << "\n  METHODS\n";
-        std::cout << std::string(80, '-') << "\n";
-        std::cout << "  XAD      XAD tape-based reverse-mode AAD\n";
-#if defined(QLRISKS_HAS_FORGE)
-        std::cout << "  JIT      Forge JIT-compiled native code\n";
-        std::cout << "  JIT-AVX  Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
-#endif
+        if (runLarge)
+        {
+            BenchmarkConfig largeConfig;
+            largeConfig.setLargeConfig();
+            if (quickMode)
+            {
+                largeConfig.pathCounts = {100, 1000};
+                largeConfig.warmupIterations = 1;
+                largeConfig.benchmarkIterations = 2;
+            }
 
-        std::cout << "\n";
-        std::cout << std::string(80, '=') << "\n";
-        std::cout << "  RUNNING BENCHMARKS\n";
-        std::cout << std::string(80, '=') << "\n";
-        std::cout << "\n";
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  BENCHMARK 2: Large Swaption (5Y into 5Y)\n";
+            std::cout << std::string(80, '=') << "\n";
 
-        runBenchmark(config, quickMode);
+            runSingleBenchmark(largeConfig, quickMode);
+        }
     }
 
+    std::cout << "\n";
     std::cout << std::string(80, '=') << "\n";
-    std::cout << "  Benchmark complete.\n";
+    std::cout << "  All benchmarks complete.\n";
     std::cout << std::string(80, '=') << "\n";
     std::cout << "\n";
 
