@@ -1183,28 +1183,92 @@ jobs:
           set -e
           cd QuantLib
 
+          # Parse double results
+          DOUBLE_SMALL=$(grep "^DOUBLE_SMALL:" build-double/double_results.txt | sed 's/DOUBLE_SMALL://')
+          DOUBLE_LARGE=$(grep "^DOUBLE_LARGE:" build-double/double_results.txt | sed 's/DOUBLE_LARGE://')
+
+          # Extract double timings (format: 10=0.0437;100=0.439;...)
+          D_S_10=$(echo "$DOUBLE_SMALL" | grep -oP '10=\K[0-9.]+')
+          D_S_100=$(echo "$DOUBLE_SMALL" | grep -oP '100=\K[0-9.]+')
+          D_S_1K=$(echo "$DOUBLE_SMALL" | grep -oP '1000=\K[0-9.]+')
+          D_S_10K=$(echo "$DOUBLE_SMALL" | grep -oP '10000=\K[0-9.]+')
+          D_S_100K=$(echo "$DOUBLE_SMALL" | grep -oP '100000=\K[0-9.]+')
+
+          D_L_10=$(echo "$DOUBLE_LARGE" | grep -oP '10=\K[0-9.]+')
+          D_L_100=$(echo "$DOUBLE_LARGE" | grep -oP '100=\K[0-9.]+')
+          D_L_1K=$(echo "$DOUBLE_LARGE" | grep -oP '1000=\K[0-9.]+')
+          D_L_10K=$(echo "$DOUBLE_LARGE" | grep -oP '10000=\K[0-9.]+')
+          D_L_100K=$(echo "$DOUBLE_LARGE" | grep -oP '100000=\K[0-9.]+')
+
+          # Parse AReal results (extract Mean values from table lines like "|     10 |   Pricing |      0.1 |")
+          # Get small swaption results (first set of results)
+          AREAL_RESULTS=$(cat build-xad/xad_results.txt)
+
+          # Extract pricing times from the output - look for lines with "Pricing" and extract the mean
+          SMALL_SECTION=$(echo "$AREAL_RESULTS" | sed -n '/PRICING-ONLY: Small/,/PRICING-ONLY: Large/p')
+          LARGE_SECTION=$(echo "$AREAL_RESULTS" | sed -n '/PRICING-ONLY: Large/,/All benchmarks complete/p')
+
+          A_S_10=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+10 \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_S_100=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+100 \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_S_1K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+1K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_S_10K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+10K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_S_100K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+100K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+
+          A_L_10=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+10 \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_L_100=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+100 \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_L_1K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+1K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_L_10K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+10K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_L_100K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+100K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+
           echo "================================================================================"
           echo "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double>"
           echo "================================================================================"
           echo ""
           echo "This compares pricing-only performance (no derivatives) to measure"
           echo "the overhead of using xad::AReal<double> instead of plain double."
-          echo ""
           echo "Both benchmarks ran on the same hardware in this job."
           echo ""
-
-          echo "===== Plain double (QuantLib) ====="
-          grep -E "^DOUBLE_" build-double/double_results.txt || echo "Results parsing failed"
-          echo ""
-
-          echo "===== xad::AReal<double> (QuantLib-Risks) ====="
-          cat build-xad/xad_results.txt
-          echo ""
-
           echo "================================================================================"
-          echo "  Analysis: Compare the timing values above."
-          echo "  Overhead = (AReal time - double time) / double time * 100%"
+          echo "  SMALL SWAPTION (1Y into 1Y)"
           echo "================================================================================"
+          echo ""
+          printf "| %6s | %12s | %12s | %10s |\n" "Paths" "double (ms)" "AReal (ms)" "Overhead"
+          printf "|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-----------:"
+
+          for paths in "10 $D_S_10 $A_S_10" "100 $D_S_100 $A_S_100" "1K $D_S_1K $A_S_1K" "10K $D_S_10K $A_S_10K" "100K $D_S_100K $A_S_100K"; do
+            set -- $paths
+            p=$1; d=$2; a=$3
+            if [ -n "$d" ] && [ -n "$a" ] && [ "$d" != "0" ]; then
+              overhead=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
+              printf "| %6s | %12.2f | %12.1f | %9s%% |\n" "$p" "$d" "$a" "$overhead"
+            fi
+          done
+
+          echo ""
+          echo "================================================================================"
+          echo "  LARGE SWAPTION (5Y into 5Y)"
+          echo "================================================================================"
+          echo ""
+          printf "| %6s | %12s | %12s | %10s |\n" "Paths" "double (ms)" "AReal (ms)" "Overhead"
+          printf "|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-----------:"
+
+          for paths in "10 $D_L_10 $A_L_10" "100 $D_L_100 $A_L_100" "1K $D_L_1K $A_L_1K" "10K $D_L_10K $A_L_10K" "100K $D_L_100K $A_L_100K"; do
+            set -- $paths
+            p=$1; d=$2; a=$3
+            if [ -n "$d" ] && [ -n "$a" ] && [ "$d" != "0" ]; then
+              overhead=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
+              printf "| %6s | %12.2f | %12.1f | %9s%% |\n" "$p" "$d" "$a" "$overhead"
+            fi
+          done
+
+          echo ""
+          echo "================================================================================"
+          echo "  SUMMARY"
+          echo "================================================================================"
+          echo ""
+          echo "Overhead represents the cost of using xad::AReal<double> instead of plain double,"
+          echo "even when not computing derivatives (passive mode, no tape recording)."
+          echo ""
 
   ##############################################################################
   # Windows, double vs AReal (no diff)
@@ -1532,25 +1596,97 @@ jobs:
       - name: Generate Comparison Report
         shell: pwsh
         run: |
+          # Parse double results
+          $doubleContent = Get-Content "QuantLib/build-double/double_results.txt" -Raw
+          $doubleSmall = ($doubleContent | Select-String "DOUBLE_SMALL:(.+)").Matches[0].Groups[1].Value
+          $doubleLarge = ($doubleContent | Select-String "DOUBLE_LARGE:(.+)").Matches[0].Groups[1].Value
+
+          # Extract double timings
+          function Parse-DoubleResults($line) {
+            $results = @{}
+            $line -split ';' | Where-Object { $_ -match '(\d+)=([0-9.]+)' } | ForEach-Object {
+              $_ -match '(\d+)=([0-9.]+)' | Out-Null
+              $results[$Matches[1]] = [double]$Matches[2]
+            }
+            return $results
+          }
+
+          $dSmall = Parse-DoubleResults $doubleSmall
+          $dLarge = Parse-DoubleResults $doubleLarge
+
+          # Parse AReal results
+          $xadContent = Get-Content "QuantLib/build-xad/xad_results.txt" -Raw
+
+          function Parse-XadResults($content, $section) {
+            $results = @{}
+            $inSection = $false
+            $content -split "`n" | ForEach-Object {
+              if ($_ -match "PRICING-ONLY: $section") { $inSection = $true }
+              elseif ($_ -match "PRICING-ONLY:" -and $inSection) { $inSection = $false }
+              elseif ($inSection -and $_ -match '^\|\s+(\d+K?)\s+\|\s+Pricing\s+\|\s+([0-9.]+)') {
+                $paths = $Matches[1]
+                $time = [double]$Matches[2]
+                # Convert path label to number
+                $pathNum = if ($paths -match '(\d+)K') { [int]$Matches[1] * 1000 } else { [int]$paths }
+                $results["$pathNum"] = $time
+              }
+            }
+            return $results
+          }
+
+          $aSmall = Parse-XadResults $xadContent "Small"
+          $aLarge = Parse-XadResults $xadContent "Large"
+
           Write-Host "================================================================================"
           Write-Host "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double>"
           Write-Host "================================================================================"
           Write-Host ""
           Write-Host "This compares pricing-only performance (no derivatives) to measure"
           Write-Host "the overhead of using xad::AReal<double> instead of plain double."
-          Write-Host ""
           Write-Host "Both benchmarks ran on the same hardware in this job."
           Write-Host ""
-
-          Write-Host "===== Plain double (QuantLib) ====="
-          Get-Content "QuantLib/build-double/double_results.txt" | Select-String "^DOUBLE_"
-          Write-Host ""
-
-          Write-Host "===== xad::AReal<double> (QuantLib-Risks) ====="
-          Get-Content "QuantLib/build-xad/xad_results.txt"
-          Write-Host ""
-
           Write-Host "================================================================================"
-          Write-Host "  Analysis: Compare the timing values above."
-          Write-Host "  Overhead = (AReal time - double time) / double time * 100%"
+          Write-Host "  SMALL SWAPTION (1Y into 1Y)"
           Write-Host "================================================================================"
+          Write-Host ""
+          Write-Host ("| {0,6} | {1,12} | {2,12} | {3,10} |" -f "Paths", "double (ms)", "AReal (ms)", "Overhead")
+          Write-Host "|-------:|-------------:|-------------:|-----------:|"
+
+          @("10", "100", "1000", "10000", "100000") | ForEach-Object {
+            $p = $_
+            $label = if ([int]$p -ge 1000) { "{0}K" -f ([int]$p / 1000) } else { $p }
+            if ($dSmall[$p] -and $aSmall[$p]) {
+              $d = $dSmall[$p]
+              $a = $aSmall[$p]
+              $overhead = (($a - $d) / $d) * 100
+              Write-Host ("| {0,6} | {1,12:F2} | {2,12:F1} | {3,9:F1}% |" -f $label, $d, $a, $overhead)
+            }
+          }
+
+          Write-Host ""
+          Write-Host "================================================================================"
+          Write-Host "  LARGE SWAPTION (5Y into 5Y)"
+          Write-Host "================================================================================"
+          Write-Host ""
+          Write-Host ("| {0,6} | {1,12} | {2,12} | {3,10} |" -f "Paths", "double (ms)", "AReal (ms)", "Overhead")
+          Write-Host "|-------:|-------------:|-------------:|-----------:|"
+
+          @("10", "100", "1000", "10000", "100000") | ForEach-Object {
+            $p = $_
+            $label = if ([int]$p -ge 1000) { "{0}K" -f ([int]$p / 1000) } else { $p }
+            if ($dLarge[$p] -and $aLarge[$p]) {
+              $d = $dLarge[$p]
+              $a = $aLarge[$p]
+              $overhead = (($a - $d) / $d) * 100
+              Write-Host ("| {0,6} | {1,12:F2} | {2,12:F1} | {3,9:F1}% |" -f $label, $d, $a, $overhead)
+            }
+          }
+
+          Write-Host ""
+          Write-Host "================================================================================"
+          Write-Host "  SUMMARY"
+          Write-Host "================================================================================"
+          Write-Host ""
+          Write-Host "Overhead represents the cost of using xad::AReal<double> instead of plain double,"
+          Write-Host "even when not computing derivatives (passive mode, no tape recording)."
+          Write-Host ""
