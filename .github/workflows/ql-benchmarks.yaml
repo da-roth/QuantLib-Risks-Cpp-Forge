@@ -12,6 +12,9 @@
 #  - Decomposition:                 Detailed timing breakdown
 #  - Compare:                       Statistical comparison XAD vs XAD-Forge
 #
+#  Type Overhead Measurement (pricing-only, no derivatives):
+#  - Linux, double vs Real (no diff): Compares plain double vs xad::AReal<double> on same hardware
+#
 #  Dependencies:
 #  - QuantLib (lballabio/QuantLib)
 #  - XAD (auto-differentiation/xad)
@@ -834,3 +837,369 @@ jobs:
         with:
           name: benchmark-compare
           path: benchmark_results.md
+
+  ##############################################################################
+  # Linux, double vs Real (no diff)
+  # Compares plain double vs xad::AReal<double> on same hardware
+  # This measures the overhead of the XAD type system in passive mode
+  ##############################################################################
+  linux-type-overhead:
+    name: Linux, double vs Real (no diff)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/lballabio/quantlib-devenv:rolling
+
+    steps:
+      - name: Hardware Info
+        run: |
+          echo "===== CPU ====="
+          lscpu | grep -E "^(Model name|CPU\(s\)|Thread|Core|Socket|CPU max MHz)"
+          echo "===== Memory ====="
+          free -h
+
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout QuantLib-Risks-Cpp (Original)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QLRISKS_REPO }}
+          ref: ${{ env.QLRISKS_BRANCH }}
+          path: QuantLib-Risks-Cpp
+
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for benchmark code)
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp-Forge
+
+      - name: Setup
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-type-overhead
+          max-size: 1G
+
+      # =========================================================================
+      # Build 1: QuantLib with plain double
+      # =========================================================================
+      - name: Create pricing-only benchmark for plain double
+        run: |
+          mkdir -p QuantLib/test-suite-double
+          cat > QuantLib/test-suite-double/benchmark_double.cpp << 'EOFCPP'
+          /*
+           * Pricing-only benchmark using plain double (no XAD types)
+           */
+          #include <ql/quantlib.hpp>
+          #include <chrono>
+          #include <iostream>
+          #include <iomanip>
+          #include <vector>
+          #include <numeric>
+          #include <cmath>
+          #include <algorithm>
+
+          using namespace QuantLib;
+
+          std::string getCpuInfo() {
+          #ifdef __linux__
+              FILE* fp = popen("grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2", "r");
+              if (fp) {
+                  char buf[256];
+                  if (fgets(buf, sizeof(buf), fp)) {
+                      pclose(fp);
+                      std::string s(buf);
+                      s.erase(0, s.find_first_not_of(" \t\n"));
+                      s.erase(s.find_last_not_of(" \t\n") + 1);
+                      return s;
+                  }
+                  pclose(fp);
+              }
+          #endif
+              return "Unknown CPU";
+          }
+
+          double computeMean(const std::vector<double>& v) {
+              if (v.empty()) return 0.0;
+              return std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+          }
+
+          double computeStddev(const std::vector<double>& v) {
+              if (v.size() < 2) return 0.0;
+              double mean = computeMean(v);
+              double sq_sum = 0.0;
+              for (auto x : v) sq_sum += (x - mean) * (x - mean);
+              return std::sqrt(sq_sum / (v.size() - 1));
+          }
+
+          ext::shared_ptr<IborIndex> makeIndex(std::vector<Date> dates, const std::vector<Rate>& rates) {
+              DayCounter dayCounter = Actual360();
+              RelinkableHandle<YieldTermStructure> termStructure;
+              ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+              Date todaysDate = index->fixingCalendar().adjust(Date(4, September, 2005));
+              Settings::instance().evaluationDate() = todaysDate;
+              dates[0] = index->fixingCalendar().advance(todaysDate, index->fixingDays(), Days);
+              termStructure.linkTo(ext::make_shared<ZeroCurve>(dates, rates, dayCounter));
+              return index;
+          }
+
+          void runBenchmark(Size size, Size i_opt, Size j_opt, Size steps, int curveEndYears,
+                            std::vector<std::pair<int, double>>& results) {
+              using Clock = std::chrono::high_resolution_clock;
+              using Duration = std::chrono::duration<double, std::milli>;
+
+              Calendar calendar = TARGET();
+              Date todaysDate(4, September, 2005);
+              Settings::instance().evaluationDate() = todaysDate;
+              Integer fixingDays = 2;
+              Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
+              DayCounter dayCounter = Actual360();
+
+              std::vector<Rate> baseZeroRates = {0.035, 0.0575};
+              std::vector<Date> baseDates = {settlementDate, settlementDate + curveEndYears * Years};
+              auto baseIndex = makeIndex(baseDates, baseZeroRates);
+
+              ext::shared_ptr<LiborForwardModelProcess> process(
+                  new LiborForwardModelProcess(size, baseIndex));
+              process->setCovarParam(ext::make_shared<LfmCovarianceProxy>(
+                  ext::make_shared<LmLinearExponentialVolatilityModel>(
+                      process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                  ext::make_shared<LmExponentialCorrelationModel>(size, 0.5)));
+
+              std::vector<Time> fixingTimes = process->fixingTimes();
+              TimeGrid grid(fixingTimes.begin(), fixingTimes.end(), steps);
+
+              std::vector<Size> location;
+              for (Size idx = 0; idx < fixingTimes.size(); ++idx)
+                  location.push_back(std::find(grid.begin(), grid.end(), fixingTimes[idx]) - grid.begin());
+
+              Size numFactors = process->factors();
+              Size exerciseStep = location[i_opt];
+              Size fullGridSteps = grid.size() - 1;
+              Size fullGridRandoms = fullGridSteps * numFactors;
+
+              BusinessDayConvention convention = baseIndex->businessDayConvention();
+              Date fwdStart = settlementDate + Period(6 * i_opt, Months);
+              Date fwdMaturity = fwdStart + Period(6 * j_opt, Months);
+              Schedule schedule(fwdStart, fwdMaturity, baseIndex->tenor(), calendar,
+                                convention, convention, DateGeneration::Forward, false);
+
+              std::vector<double> accrualStart(size), accrualEnd(size);
+              for (Size k = 0; k < size; ++k) {
+                  accrualStart[k] = process->accrualStartTimes()[k];
+                  accrualEnd[k] = process->accrualEndTimes()[k];
+              }
+
+              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000};
+              Size maxPaths = 100000;
+
+              std::cerr << "  Generating randoms..." << std::flush;
+              typedef PseudoRandom::rsg_type rsg_type;
+              rsg_type rsg = PseudoRandom::make_sequence_generator(fullGridRandoms, BigNatural(42));
+              std::vector<std::vector<double>> allRandoms(maxPaths);
+              for (Size n = 0; n < maxPaths; ++n) {
+                  allRandoms[n].resize(fullGridRandoms);
+                  const auto& seq = rsg.nextSequence();
+                  for (Size m = 0; m < fullGridRandoms; ++m)
+                      allRandoms[n][m] = seq.value[m];
+              }
+              std::cerr << " Done." << std::endl;
+
+              ext::shared_ptr<VanillaSwap> fwdSwap(
+                  new VanillaSwap(Swap::Receiver, 1.0, schedule, 0.05, dayCounter,
+                                  schedule, baseIndex, 0.0, baseIndex->dayCounter()));
+              fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+                  baseIndex->forwardingTermStructure()));
+              double swapRate = fwdSwap->fairRate();
+              Array initRates = process->initialValues();
+
+              size_t warmupIters = 2, benchIters = 5;
+
+              for (size_t tc = 0; tc < pathCounts.size(); ++tc) {
+                  Size nrTrails = pathCounts[tc];
+                  std::vector<double> times;
+
+                  for (size_t iter = 0; iter < warmupIters + benchIters; ++iter) {
+                      auto t_start = Clock::now();
+                      double price = 0.0;
+                      for (Size n = 0; n < nrTrails; ++n) {
+                          Array asset(size);
+                          for (Size k = 0; k < size; ++k) asset[k] = initRates[k];
+                          Array assetAtExercise(size);
+                          for (Size step = 1; step <= fullGridSteps; ++step) {
+                              Size offset = (step - 1) * numFactors;
+                              Array dw(numFactors);
+                              for (Size f = 0; f < numFactors; ++f)
+                                  dw[f] = allRandoms[n][offset + f];
+                              asset = process->evolve(grid[step - 1], asset, grid.dt(step - 1), dw);
+                              if (step == exerciseStep)
+                                  for (Size k = 0; k < size; ++k) assetAtExercise[k] = asset[k];
+                          }
+                          Array dis(size);
+                          double df = 1.0;
+                          for (Size k = 0; k < size; ++k) {
+                              df = df / (1.0 + assetAtExercise[k] * (accrualEnd[k] - accrualStart[k]));
+                              dis[k] = df;
+                          }
+                          double npv = 0.0;
+                          for (Size m = i_opt; m < i_opt + j_opt; ++m)
+                              npv += (swapRate - assetAtExercise[m]) * (accrualEnd[m] - accrualStart[m]) * dis[m];
+                          if (npv > 0.0) price += npv;
+                      }
+                      (void)price;
+                      auto t_end = Clock::now();
+                      if (iter >= warmupIters)
+                          times.push_back(Duration(t_end - t_start).count());
+                  }
+                  results.push_back({pathCounts[tc], computeMean(times)});
+              }
+          }
+
+          int main() {
+              std::vector<std::pair<int, double>> smallResults, largeResults;
+
+              std::cerr << "Running small swaption benchmark..." << std::endl;
+              runBenchmark(10, 2, 2, 8, 6, smallResults);
+
+              std::cerr << "Running large swaption benchmark..." << std::endl;
+              runBenchmark(20, 10, 10, 20, 12, largeResults);
+
+              // Output results in parseable format
+              std::cout << "DOUBLE_SMALL:";
+              for (auto& r : smallResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              std::cout << "DOUBLE_LARGE:";
+              for (auto& r : largeResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              return 0;
+          }
+          EOFCPP
+
+      - name: Configure QuantLib (plain double)
+        run: |
+          cd QuantLib
+          cmake -B build-double -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF
+
+      - name: Build QuantLib (plain double)
+        run: |
+          cd QuantLib/build-double
+          cmake --build .
+
+      - name: Build benchmark (plain double)
+        run: |
+          cd QuantLib/build-double
+          g++ -O3 -std=c++17 -I../.. -I. \
+            ../test-suite-double/benchmark_double.cpp \
+            -L. -lQuantLib -lpthread \
+            -o benchmark_double
+
+      # =========================================================================
+      # Build 2: QuantLib-Risks with xad::AReal<double>
+      # =========================================================================
+      - name: Patch benchmark into QuantLib-Risks-Cpp
+        run: |
+          cp QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp \
+             QuantLib-Risks-Cpp/test-suite/
+          cp QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp \
+             QuantLib-Risks-Cpp/test-suite/
+
+          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
+
+          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
+          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
+              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
+          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
+              ql_library
+              ${QL_THREAD_LIBRARIES})
+          EOF
+
+      - name: Configure QuantLib (xad::AReal)
+        run: |
+          cd QuantLib
+          cmake -B build-xad -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_BUILD_TEST_SUITE=ON
+
+      - name: Build QuantLib-Risks (xad::AReal)
+        run: |
+          cd QuantLib/build-xad
+          cmake --build . --target QuantLib-Risks_benchmark_standalone
+
+      # =========================================================================
+      # Run both benchmarks and compare
+      # =========================================================================
+      - name: Run Benchmarks
+        run: |
+          set -e
+
+          echo "===== Running plain double benchmark ====="
+          cd QuantLib/build-double
+          ./benchmark_double > double_results.txt 2>&1
+          cat double_results.txt
+
+          echo ""
+          echo "===== Running xad::AReal benchmark ====="
+          cd ../build-xad
+          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone --pricing-only > xad_results.txt 2>&1
+          cat xad_results.txt
+
+      - name: Generate Comparison Report
+        run: |
+          set -e
+          cd QuantLib
+
+          echo "================================================================================"
+          echo "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double>"
+          echo "================================================================================"
+          echo ""
+          echo "This compares pricing-only performance (no derivatives) to measure"
+          echo "the overhead of using xad::AReal<double> instead of plain double."
+          echo ""
+          echo "Both benchmarks ran on the same hardware in this job."
+          echo ""
+
+          echo "===== Plain double (QuantLib) ====="
+          grep -E "^DOUBLE_" build-double/double_results.txt || echo "Results parsing failed"
+          echo ""
+
+          echo "===== xad::AReal<double> (QuantLib-Risks) ====="
+          cat build-xad/xad_results.txt
+          echo ""
+
+          echo "================================================================================"
+          echo "  Analysis: Compare the timing values above."
+          echo "  Overhead = (xad::AReal time - double time) / double time * 100%"
+          echo "================================================================================"

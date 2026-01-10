@@ -1505,6 +1505,272 @@ void runDecomposition(const BenchmarkConfig& config)
 }
 
 // ============================================================================
+// Pricing-Only Benchmark (No Derivatives)
+// ============================================================================
+// This measures the overhead of using xad::AReal<double> vs plain double
+// when NOT computing derivatives. It runs the same MC simulation but without
+// any tape recording or derivative computation.
+
+void runPricingOnlyBenchmark(const BenchmarkConfig& config, bool quickMode)
+{
+    using Clock = std::chrono::high_resolution_clock;
+    using Duration = std::chrono::duration<double, std::milli>;
+
+    Calendar calendar = TARGET();
+    Date todaysDate(4, September, 2005);
+    Settings::instance().evaluationDate() = todaysDate;
+    Integer fixingDays = 2;
+    Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
+    DayCounter dayCounter = Actual360();
+
+    // Build base curve
+    std::vector<Rate> baseZeroRates = {config.depoRates[0], config.swapRates.back()};
+    std::vector<Date> baseDates = {settlementDate, settlementDate + config.curveEndYears * Years};
+    auto baseIndex = makeIndex(baseDates, baseZeroRates);
+
+    ext::shared_ptr<LiborForwardModelProcess> baseProcess(
+        new LiborForwardModelProcess(config.size, baseIndex));
+    ext::shared_ptr<LmCorrelationModel> baseCorrModel(
+        new LmExponentialCorrelationModel(config.size, 0.5));
+    ext::shared_ptr<LmVolatilityModel> baseVolaModel(
+        new LmLinearExponentialVolatilityModel(baseProcess->fixingTimes(),
+                                               0.291, 1.483, 0.116, 0.00001));
+    baseProcess->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+        new LfmCovarianceProxy(baseVolaModel, baseCorrModel)));
+
+    // Grid setup
+    std::vector<Time> fixingTimes = baseProcess->fixingTimes();
+    TimeGrid grid(fixingTimes.begin(), fixingTimes.end(), config.steps);
+
+    std::vector<Size> location;
+    for (Size idx = 0; idx < fixingTimes.size(); ++idx)
+    {
+        location.push_back(
+            std::find(grid.begin(), grid.end(), fixingTimes[idx]) - grid.begin());
+    }
+
+    Size numFactors = baseProcess->factors();
+    Size exerciseStep = location[config.i_opt];
+    Size fullGridSteps = grid.size() - 1;
+    Size fullGridRandoms = fullGridSteps * numFactors;
+
+    // Swap schedule
+    BusinessDayConvention convention = baseIndex->businessDayConvention();
+    Date fwdStart = settlementDate + Period(6 * config.i_opt, Months);
+    Date fwdMaturity = fwdStart + Period(6 * config.j_opt, Months);
+    Schedule schedule(fwdStart, fwdMaturity, baseIndex->tenor(), calendar,
+                      convention, convention, DateGeneration::Forward, false);
+
+    // Accrual periods
+    std::vector<double> accrualStart(config.size), accrualEnd(config.size);
+    for (Size k = 0; k < config.size; ++k)
+    {
+        accrualStart[k] = value(baseProcess->accrualStartTimes()[k]);
+        accrualEnd[k] = value(baseProcess->accrualEndTimes()[k]);
+    }
+
+    // Pre-generate random numbers
+    Size maxPaths = static_cast<Size>(*std::max_element(config.pathCounts.begin(), config.pathCounts.end()));
+    std::cout << "  Generating " << maxPaths << " x " << fullGridRandoms << " random numbers..." << std::flush;
+
+    typedef PseudoRandom::rsg_type rsg_type;
+    rsg_type rsg_base = PseudoRandom::make_sequence_generator(fullGridRandoms, BigNatural(42));
+
+    std::vector<std::vector<double>> allRandoms(maxPaths);
+    for (Size n = 0; n < maxPaths; ++n)
+    {
+        allRandoms[n].resize(fullGridRandoms);
+        const auto& seq = rsg_base.nextSequence();
+        for (Size m = 0; m < fullGridRandoms; ++m)
+        {
+            allRandoms[n][m] = value(seq.value[m]);
+        }
+    }
+    std::cout << " Done." << std::endl;
+
+    // Build curve and process for pricing
+    RelinkableHandle<YieldTermStructure> euriborTS;
+    auto euribor6m = ext::make_shared<Euribor6M>(euriborTS);
+    euribor6m->addFixing(Date(2, September, 2005), 0.04);
+
+    std::vector<ext::shared_ptr<RateHelper>> instruments;
+    for (Size idx = 0; idx < config.numDeposits; ++idx)
+    {
+        auto depoQuote = ext::make_shared<SimpleQuote>(config.depoRates[idx]);
+        instruments.push_back(ext::make_shared<DepositRateHelper>(
+            Handle<Quote>(depoQuote), config.depoTenors[idx], fixingDays,
+            calendar, ModifiedFollowing, true, dayCounter));
+    }
+    for (Size idx = 0; idx < config.numSwaps; ++idx)
+    {
+        auto swapQuote = ext::make_shared<SimpleQuote>(config.swapRates[idx]);
+        instruments.push_back(ext::make_shared<SwapRateHelper>(
+            Handle<Quote>(swapQuote), config.swapTenors[idx],
+            calendar, Annual, Unadjusted, Thirty360(Thirty360::BondBasis),
+            euribor6m));
+    }
+
+    auto yieldCurve = ext::make_shared<PiecewiseYieldCurve<ZeroYield, Linear>>(
+        settlementDate, instruments, dayCounter);
+    yieldCurve->enableExtrapolation();
+
+    std::vector<Date> curveDates;
+    std::vector<Rate> zeroRates;
+    curveDates.push_back(settlementDate);
+    zeroRates.push_back(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate());
+    Date endDate = settlementDate + config.curveEndYears * Years;
+    curveDates.push_back(endDate);
+    zeroRates.push_back(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate());
+
+    RelinkableHandle<YieldTermStructure> termStructure;
+    ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+    index->addFixing(Date(2, September, 2005), 0.04);
+    termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates, dayCounter));
+
+    ext::shared_ptr<LiborForwardModelProcess> process(
+        new LiborForwardModelProcess(config.size, index));
+    process->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+        new LfmCovarianceProxy(
+            ext::make_shared<LmLinearExponentialVolatilityModel>(process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+            ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
+
+    // Get swap rate
+    ext::shared_ptr<VanillaSwap> fwdSwap(
+        new VanillaSwap(Swap::Receiver, 1.0,
+                        schedule, 0.05, dayCounter,
+                        schedule, index, 0.0, index->dayCounter()));
+    fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+        index->forwardingTermStructure()));
+    Real swapRate = fwdSwap->fairRate();
+
+    // Get initial rates
+    Array initRates = process->initialValues();
+
+    // Results storage
+    std::vector<double> results_mean(config.pathCounts.size());
+    std::vector<double> results_std(config.pathCounts.size());
+
+    // Run benchmarks for each path count
+    for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
+    {
+        Size nrTrails = static_cast<Size>(config.pathCounts[tc]);
+
+        std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] ";
+        if (config.pathCounts[tc] >= 1000)
+            std::cout << (config.pathCounts[tc] / 1000) << "K";
+        else
+            std::cout << config.pathCounts[tc];
+        std::cout << " paths " << std::flush;
+
+        std::vector<double> times;
+
+        for (size_t iter = 0; iter < config.warmupIterations + config.benchmarkIterations; ++iter)
+        {
+            bool recordTiming = (iter >= config.warmupIterations);
+
+            auto t_start = Clock::now();
+
+            // MC simulation - pricing only (no tape, no derivatives)
+            Real price = 0.0;
+            for (Size n = 0; n < nrTrails; ++n)
+            {
+                Array asset(config.size);
+                for (Size k = 0; k < config.size; ++k)
+                    asset[k] = initRates[k];
+
+                Array assetAtExercise(config.size);
+                for (Size step = 1; step <= fullGridSteps; ++step)
+                {
+                    Size offset = (step - 1) * numFactors;
+                    Time t = grid[step - 1];
+                    Time dt = grid.dt(step - 1);
+
+                    Array dw(numFactors);
+                    for (Size f = 0; f < numFactors; ++f)
+                        dw[f] = allRandoms[n][offset + f];
+
+                    asset = process->evolve(t, asset, dt, dw);
+
+                    if (step == exerciseStep)
+                    {
+                        for (Size k = 0; k < config.size; ++k)
+                            assetAtExercise[k] = asset[k];
+                    }
+                }
+
+                // Discount factors
+                Array dis(config.size);
+                Real df = 1.0;
+                for (Size k = 0; k < config.size; ++k)
+                {
+                    Real accrual = accrualEnd[k] - accrualStart[k];
+                    df = df / (1.0 + assetAtExercise[k] * accrual);
+                    dis[k] = df;
+                }
+
+                // NPV
+                Real npv = 0.0;
+                for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+                {
+                    Real accrual = accrualEnd[m] - accrualStart[m];
+                    npv += (swapRate - assetAtExercise[m]) * accrual * dis[m];
+                }
+
+                if (value(npv) > 0.0)
+                    price += npv;
+            }
+            price /= static_cast<Real>(nrTrails);
+
+            auto t_end = Clock::now();
+            if (recordTiming)
+            {
+                times.push_back(Duration(t_end - t_start).count());
+            }
+
+            // Suppress unused variable warning
+            (void)price;
+        }
+
+        results_mean[tc] = computeMean(times);
+        results_std[tc] = computeStddev(times);
+
+        std::cout << "done\n";
+    }
+
+    // Print results table
+    std::cout << "\n";
+    std::cout << std::string(80, '=') << "\n";
+    std::cout << "  RESULTS (mean +/- stddev, in ms)\n";
+    std::cout << std::string(80, '=') << "\n";
+    std::cout << "\n";
+
+    std::cout << "| Paths  |    Method |     Mean |   StdDev |\n";
+    std::cout << "|-------:|----------:|---------:|---------:|\n";
+
+    for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
+    {
+        std::string pathLabel;
+        if (config.pathCounts[tc] >= 1000)
+            pathLabel = std::to_string(config.pathCounts[tc] / 1000) + "K";
+        else
+            pathLabel = std::to_string(config.pathCounts[tc]);
+
+        std::cout << std::fixed << std::setprecision(1);
+        std::cout << "| " << std::setw(6) << pathLabel << " |   Pricing |"
+                  << std::setw(9) << results_mean[tc] << " |"
+                  << std::setw(9) << results_std[tc] << " |\n";
+
+        if (tc < config.pathCounts.size() - 1)
+            std::cout << "|--------+-----------+----------+----------|\n";
+    }
+
+    std::cout << "\n";
+    std::cout << "  Pricing-only mode: No tape recording, no derivative computation.\n";
+    std::cout << "  This measures the overhead of using xad::AReal<double> vs plain double.\n";
+    std::cout << "\n";
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1517,10 +1783,12 @@ void printUsage(const char* progName)
     std::cout << "  --small-only      Run only the small swaption benchmark (1Y into 1Y)\n";
     std::cout << "  --large-only      Run only the large swaption benchmark (5Y into 5Y)\n";
     std::cout << "  --decomposition   Run performance decomposition analysis\n";
+    std::cout << "  --pricing-only    Run pricing-only benchmark (no derivatives, measures type overhead)\n";
     std::cout << "\nBenchmarks (both run by default):\n";
     std::cout << "  Small:  1Y into 1Y swaption (10 forward rates, 8 time steps)\n";
     std::cout << "  Large:  5Y into 5Y swaption (20 forward rates, 20 time steps)\n";
     std::cout << "\nThis benchmark compares AD approaches for swaption pricing.\n";
+    std::cout << "The --pricing-only mode measures overhead of xad::AReal<double> vs double.\n";
 #if defined(QLRISKS_HAS_FORGE)
     std::cout << "Build: With Forge JIT support\n";
 #else
@@ -1577,6 +1845,7 @@ int main(int argc, char** argv)
     bool smallOnly = false;
     bool largeOnly = false;
     bool decompositionMode = false;
+    bool pricingOnlyMode = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1594,6 +1863,8 @@ int main(int argc, char** argv)
             largeOnly = true;
         else if (arg == "--decomposition")
             decompositionMode = true;
+        else if (arg == "--pricing-only")
+            pricingOnlyMode = true;
     }
 
     // Print header
@@ -1610,7 +1881,109 @@ int main(int argc, char** argv)
     std::cout << "  SIMD:         " << getSimdInfo() << "\n";
     std::cout << "  Compiler:     " << getCompilerInfo() << "\n";
 
-    if (decompositionMode)
+    if (pricingOnlyMode)
+    {
+        // Run pricing-only benchmark (no derivatives)
+        // This measures the overhead of xad::AReal<double> vs plain double
+        bool runSmall = !largeOnly;
+        bool runLarge = !smallOnly;
+
+        if (runSmall)
+        {
+            BenchmarkConfig smallConfig;
+            if (quickMode)
+            {
+                smallConfig.pathCounts = {100, 1000};
+                smallConfig.warmupIterations = 1;
+                smallConfig.benchmarkIterations = 2;
+            }
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  PRICING-ONLY: Small Swaption (1Y into 1Y)\n";
+            std::cout << std::string(80, '=') << "\n";
+
+            std::cout << "\n  INSTRUMENT\n";
+            std::cout << std::string(80, '-') << "\n";
+            std::cout << "  Instrument:   " << smallConfig.instrumentDesc << "\n";
+            std::cout << "  Model:        LIBOR Market Model (LMM)\n";
+            std::cout << "  Forward rates:" << smallConfig.size << " (semi-annual)\n";
+            std::cout << "  Time steps:   " << smallConfig.steps << "\n";
+            std::cout << "  Mode:         Pricing only (no derivatives)\n";
+
+            std::cout << "\n  BENCHMARK CONFIGURATION\n";
+            std::cout << std::string(80, '-') << "\n";
+            std::cout << "  Path counts:  ";
+            for (size_t i = 0; i < smallConfig.pathCounts.size(); ++i)
+            {
+                if (i > 0) std::cout << ", ";
+                if (smallConfig.pathCounts[i] >= 1000)
+                    std::cout << (smallConfig.pathCounts[i] / 1000) << "K";
+                else
+                    std::cout << smallConfig.pathCounts[i];
+            }
+            std::cout << "\n";
+            std::cout << "  Warmup:       " << smallConfig.warmupIterations << " iterations\n";
+            std::cout << "  Measured:     " << smallConfig.benchmarkIterations << " iterations\n";
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  RUNNING PRICING-ONLY BENCHMARK\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "\n";
+
+            runPricingOnlyBenchmark(smallConfig, quickMode);
+        }
+
+        if (runLarge)
+        {
+            BenchmarkConfig largeConfig;
+            largeConfig.setLargeConfig();
+            if (quickMode)
+            {
+                largeConfig.pathCounts = {100, 1000};
+                largeConfig.warmupIterations = 1;
+                largeConfig.benchmarkIterations = 2;
+            }
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  PRICING-ONLY: Large Swaption (5Y into 5Y)\n";
+            std::cout << std::string(80, '=') << "\n";
+
+            std::cout << "\n  INSTRUMENT\n";
+            std::cout << std::string(80, '-') << "\n";
+            std::cout << "  Instrument:   " << largeConfig.instrumentDesc << "\n";
+            std::cout << "  Model:        LIBOR Market Model (LMM)\n";
+            std::cout << "  Forward rates:" << largeConfig.size << " (semi-annual)\n";
+            std::cout << "  Time steps:   " << largeConfig.steps << "\n";
+            std::cout << "  Mode:         Pricing only (no derivatives)\n";
+
+            std::cout << "\n  BENCHMARK CONFIGURATION\n";
+            std::cout << std::string(80, '-') << "\n";
+            std::cout << "  Path counts:  ";
+            for (size_t i = 0; i < largeConfig.pathCounts.size(); ++i)
+            {
+                if (i > 0) std::cout << ", ";
+                if (largeConfig.pathCounts[i] >= 1000)
+                    std::cout << (largeConfig.pathCounts[i] / 1000) << "K";
+                else
+                    std::cout << largeConfig.pathCounts[i];
+            }
+            std::cout << "\n";
+            std::cout << "  Warmup:       " << largeConfig.warmupIterations << " iterations\n";
+            std::cout << "  Measured:     " << largeConfig.benchmarkIterations << " iterations\n";
+
+            std::cout << "\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "  RUNNING PRICING-ONLY BENCHMARK\n";
+            std::cout << std::string(80, '=') << "\n";
+            std::cout << "\n";
+
+            runPricingOnlyBenchmark(largeConfig, quickMode);
+        }
+    }
+    else if (decompositionMode)
     {
         // Run decomposition for both configs
         BenchmarkConfig smallConfig;
