@@ -19,23 +19,38 @@ set(QLRISKS_TEST_SOURCES
     quantlibtestsuite_xad.cpp
 )
 
-# Benchmark sources (separate from test suite)
+# XAD JIT tests - uses C++ interpreter backend, does NOT require Forge
+# These test XAD's JIT compilation infrastructure with the built-in interpreter
+option(QLRISKS_ENABLE_JIT_TESTS "Enable XAD JIT tests (uses interpreter backend, no Forge required)" OFF)
+if(QLRISKS_ENABLE_JIT_TESTS)
+    message(STATUS "QLRisks test-suite: Adding XAD JIT tests (interpreter backend)")
+    list(APPEND QLRISKS_TEST_SOURCES jit_xad.cpp)
+endif()
+
+# Forge JIT tests - require Forge's native code backend
+# These tests require xad-forge for native machine code generation
+set(QLRISKS_FORGE_TESTS_ENABLED FALSE)
+if(QLRISKS_ENABLE_FORGE_TESTS AND TARGET QLRisks::forge)
+    message(STATUS "QLRisks test-suite: Adding Forge JIT tests (native code backend)")
+    list(APPEND QLRISKS_TEST_SOURCES forgebackend_xad.cpp swaption_jit_pipeline_xad.cpp)
+    set(QLRISKS_FORGE_TESTS_ENABLED TRUE)
+elseif(QLRISKS_ENABLE_FORGE_TESTS)
+    message(WARNING "QLRisks test-suite: QLRISKS_ENABLE_FORGE_TESTS=ON but QLRisks::forge not available")
+endif()
+
+# Benchmark sources - Boost.Test based (requires Forge for JIT benchmarks)
 set(QLRISKS_BENCHMARK_SOURCES
     quantlibrisks_benchmark.cpp
     swaption_benchmark.cpp
     utilities_xad.cpp
 )
 
-# Forge JIT tests - only added when explicitly enabled AND Forge is available
-# These tests require Forge's JIT compiler for AAD
-set(QLRISKS_FORGE_TESTS_ENABLED FALSE)
-if(QLRISKS_ENABLE_FORGE_TESTS AND TARGET QLRisks::forge)
-    message(STATUS "QLRisks test-suite: Adding Forge JIT tests")
-    list(APPEND QLRISKS_TEST_SOURCES jit_xad.cpp forgebackend_xad.cpp swaption_jit_pipeline_xad.cpp)
-    set(QLRISKS_FORGE_TESTS_ENABLED TRUE)
-elseif(QLRISKS_ENABLE_FORGE_TESTS)
-    message(WARNING "QLRisks test-suite: QLRISKS_ENABLE_FORGE_TESTS=ON but QLRisks::forge not available")
-endif()
+# Baseline benchmark sources - Boost.Test based (no Forge required)
+set(QLRISKS_BENCHMARK_BASELINE_SOURCES
+    quantlibrisks_benchmark.cpp
+    swaption_benchmark_baseline.cpp
+    utilities_xad.cpp
+)
 
 set(QLRISKS_TEST_HEADERS utilities_xad.hpp)
 
@@ -66,10 +81,10 @@ if(QL_BUILD_TEST_SUITE OR QLRISKS_BUILD_TEST_SUITE)
     add_test(NAME QuantLib-Risks_test_suite COMMAND QuantLib-Risks_test_suite --log_level=message)
 endif()
 
-# Benchmark suite - separate executable for CI benchmarks
-# Requires Forge to be available
+# Benchmark suite with Forge JIT - Boost.Test based
+# Requires Forge for JIT scalar and JIT-AVX benchmarks
 if(QLRISKS_BUILD_BENCHMARK AND TARGET QLRisks::forge)
-    message(STATUS "QLRisks: Building benchmark suite")
+    message(STATUS "QLRisks: Building benchmark suite (with Forge JIT)")
     add_executable(QuantLib-Risks_benchmark ${QLRISKS_BENCHMARK_SOURCES} ${QLRISKS_TEST_HEADERS})
     set_target_properties(QuantLib-Risks_benchmark PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark")
     if (NOT Boost_USE_STATIC_LIBS)
@@ -86,7 +101,27 @@ if(QLRISKS_BUILD_BENCHMARK AND TARGET QLRisks::forge)
     endif()
     add_test(NAME QuantLib-Risks_benchmark COMMAND QuantLib-Risks_benchmark --log_level=message)
 elseif(QLRISKS_BUILD_BENCHMARK)
-    message(WARNING "QLRisks: QLRISKS_BUILD_BENCHMARK=ON but QLRisks::forge not available")
+    message(WARNING "QLRisks: QLRISKS_BUILD_BENCHMARK=ON but QLRisks::forge not available. Use QLRISKS_BUILD_BENCHMARK_BASELINE for non-Forge benchmarks.")
+endif()
+
+# Baseline benchmark suite - Boost.Test based, NO Forge required
+# Compares XAD tape-based AD only (useful for baseline measurements)
+option(QLRISKS_BUILD_BENCHMARK_BASELINE "Build baseline benchmark suite (Boost.Test, no Forge)" OFF)
+if(QLRISKS_BUILD_BENCHMARK_BASELINE)
+    message(STATUS "QLRisks: Building baseline benchmark suite (XAD tape only)")
+    add_executable(QuantLib-Risks_benchmark_baseline ${QLRISKS_BENCHMARK_BASELINE_SOURCES} ${QLRISKS_TEST_HEADERS})
+    set_target_properties(QuantLib-Risks_benchmark_baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")
+    if (NOT Boost_USE_STATIC_LIBS)
+        target_compile_definitions(QuantLib-Risks_benchmark_baseline PRIVATE BOOST_ALL_DYN_LINK)
+    endif()
+    target_link_libraries(QuantLib-Risks_benchmark_baseline PRIVATE
+        ql_library
+        ${QL_THREAD_LIBRARIES})
+
+    if (QL_INSTALL_TEST_SUITE)
+        install(TARGETS QuantLib-Risks_benchmark_baseline RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
+    endif()
+    add_test(NAME QuantLib-Risks_benchmark_baseline COMMAND QuantLib-Risks_benchmark_baseline --log_level=message)
 endif()
 
 # Standalone benchmark executable - no Boost.Test dependency
