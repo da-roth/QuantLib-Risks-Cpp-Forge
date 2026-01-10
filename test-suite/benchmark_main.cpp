@@ -16,6 +16,7 @@
    Options:
      --help, -h        Show this help message
      --quick           Run quick benchmark (fewer iterations, fewer path counts)
+     --large           Run larger swaption benchmark (5Y into 5Y instead of 1Y into 1Y)
      --decomposition   Run performance decomposition analysis
 
    Copyright (C) 2025 Xcelerit Computing Limited
@@ -171,10 +172,16 @@ struct BenchmarkConfig
     Size j_opt = 2;       // Swap length
     Size steps = 8;       // Time steps
 
+    // Curve end date
+    int curveEndYears = 6;
+
     // Test configuration
     std::vector<int> pathCounts;
     size_t warmupIterations = 2;
     size_t benchmarkIterations = 5;
+
+    // Instrument description
+    std::string instrumentDesc = "European swaption (1Y into 1Y)";
 
     BenchmarkConfig()
     {
@@ -183,6 +190,30 @@ struct BenchmarkConfig
         depoRates = {0.0350, 0.0365, 0.0380, 0.0400};
         swapRates = {0.0420, 0.0480, 0.0520, 0.0550, 0.0575};
         pathCounts = {10, 100, 1000, 10000};
+    }
+
+    // Configure for larger swaption (5Y into 5Y)
+    void setLargeConfig()
+    {
+        // More market quotes for longer curve
+        numDeposits = 4;
+        numSwaps = 10;
+        depoTenors = {1 * Days, 1 * Months, 3 * Months, 6 * Months};
+        swapTenors = {1 * Years, 2 * Years, 3 * Years, 4 * Years, 5 * Years,
+                      6 * Years, 7 * Years, 8 * Years, 9 * Years, 10 * Years};
+        depoRates = {0.0320, 0.0335, 0.0355, 0.0375};
+        swapRates = {0.0400, 0.0435, 0.0460, 0.0480, 0.0495,
+                     0.0505, 0.0515, 0.0522, 0.0528, 0.0532};
+
+        // Larger LMM: 20 forward rates (semi-annual to 10Y)
+        size = 20;
+        i_opt = 10;    // Option starts at 5Y (10 × 6 months)
+        j_opt = 10;    // 5Y swap (10 × 6 months)
+        steps = 20;    // More time steps for 5Y simulation
+
+        curveEndYears = 12;  // Extra buffer for accrual periods
+
+        instrumentDesc = "European swaption (5Y into 5Y)";
     }
 };
 
@@ -215,9 +246,9 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
 
     Size numMarketQuotes = config.numDeposits + config.numSwaps;
 
-    // Build base curve
-    std::vector<Rate> baseZeroRates = {0.0350, 0.0575};
-    std::vector<Date> baseDates = {settlementDate, settlementDate + 6 * Years};
+    // Build base curve (using first deposit rate and last swap rate as endpoints)
+    std::vector<Rate> baseZeroRates = {config.depoRates[0], config.swapRates.back()};
+    std::vector<Date> baseDates = {settlementDate, settlementDate + config.curveEndYears * Years};
     auto baseIndex = makeIndex(baseDates, baseZeroRates);
 
     ext::shared_ptr<LiborForwardModelProcess> baseProcess(
@@ -352,7 +383,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
                 std::vector<Real> zeroRates;
                 curveDates.push_back(settlementDate);
                 zeroRates.push_back(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate());
-                Date endDate = settlementDate + 6 * Years;
+                Date endDate = settlementDate + config.curveEndYears * Years;
                 curveDates.push_back(endDate);
                 zeroRates.push_back(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate());
 
@@ -491,7 +522,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
                 std::vector<Real> zeroRates;
                 curveDates.push_back(settlementDate);
                 zeroRates.push_back(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate());
-                Date endDate = settlementDate + 6 * Years;
+                Date endDate = settlementDate + config.curveEndYears * Years;
                 curveDates.push_back(endDate);
                 zeroRates.push_back(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate());
 
@@ -725,7 +756,7 @@ void runBenchmark(const BenchmarkConfig& config, bool quickMode)
                 std::vector<Real> zeroRates;
                 curveDates.push_back(settlementDate);
                 zeroRates.push_back(yieldCurve->zeroRate(settlementDate, dayCounter, Continuous).rate());
-                Date endDate = settlementDate + 6 * Years;
+                Date endDate = settlementDate + config.curveEndYears * Years;
                 curveDates.push_back(endDate);
                 zeroRates.push_back(yieldCurve->zeroRate(endDate, dayCounter, Continuous).rate());
 
@@ -1037,9 +1068,9 @@ void runDecomposition(const BenchmarkConfig& config)
     Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
     DayCounter dayCounter = Actual360();
 
-    // Build base curve
-    std::vector<Rate> baseZeroRates = {0.0350, 0.0575};
-    std::vector<Date> baseDates = {settlementDate, settlementDate + 6 * Years};
+    // Build base curve (using first deposit rate and last swap rate as endpoints)
+    std::vector<Rate> baseZeroRates = {config.depoRates[0], config.swapRates.back()};
+    std::vector<Date> baseDates = {settlementDate, settlementDate + config.curveEndYears * Years};
     auto baseIndex = makeIndex(baseDates, baseZeroRates);
 
     ext::shared_ptr<LiborForwardModelProcess> baseProcess(
@@ -1081,8 +1112,8 @@ void runDecomposition(const BenchmarkConfig& config)
     ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
     index->addFixing(Date(2, September, 2005), 0.04);
 
-    std::vector<Date> curveDates = {settlementDate, settlementDate + 6 * Years};
-    std::vector<Rate> zeroRates_ql = {0.0350, 0.0575};
+    std::vector<Date> curveDates = {settlementDate, settlementDate + config.curveEndYears * Years};
+    std::vector<Rate> zeroRates_ql = {config.depoRates[0], config.swapRates.back()};
     termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_ql, dayCounter));
 
     ext::shared_ptr<LiborForwardModelProcess> process(
@@ -1248,20 +1279,31 @@ void runDecomposition(const BenchmarkConfig& config)
         (void)dummy;
     }
 
-    std::cout << "\n";
-    std::cout << "  Phase               |   Time (ms) |   % Total\n";
-    std::cout << "  --------------------+-------------+----------\n";
-
     double totalTime = graphTimeMs + compileTimeMs + setInputTime + forwardTime + accumulateTime;
+    double execTime = totalTime - graphTimeMs - compileTimeMs;
+
+    // Print in xad-jit style
+    std::cout << "\n  JIT-AVX (Forge + AVX2 SIMD)\n";
+    std::cout << std::string(80, '-') << "\n";
 
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Graph Build         |" << std::setw(12) << graphTimeMs << " |" << std::setw(9) << (100.0 * graphTimeMs / totalTime) << "%\n";
-    std::cout << "  JIT Compile         |" << std::setw(12) << compileTimeMs << " |" << std::setw(9) << (100.0 * compileTimeMs / totalTime) << "%\n";
-    std::cout << "  Set Inputs          |" << std::setw(12) << setInputTime << " |" << std::setw(9) << (100.0 * setInputTime / totalTime) << "%\n";
-    std::cout << "  Forward+Backward    |" << std::setw(12) << forwardTime << " |" << std::setw(9) << (100.0 * forwardTime / totalTime) << "%\n";
-    std::cout << "  Accumulate          |" << std::setw(12) << accumulateTime << " |" << std::setw(9) << (100.0 * accumulateTime / totalTime) << "%\n";
-    std::cout << "  --------------------+-------------+----------\n";
-    std::cout << "  TOTAL               |" << std::setw(12) << totalTime << " |    100.00%\n";
+    std::cout << "  Total time:              " << std::setw(10) << totalTime << " ms (100.0%)\n";
+    std::cout << "  -------------------------\n";
+    std::cout << "  Graph build (one-time):  " << std::setw(10) << graphTimeMs << " ms ("
+              << std::setw(5) << std::setprecision(1) << (graphTimeMs / totalTime * 100) << "%)\n";
+    std::cout << "  Compile (one-time):      " << std::setw(10) << std::setprecision(2) << compileTimeMs << " ms ("
+              << std::setw(5) << std::setprecision(1) << (compileTimeMs / totalTime * 100) << "%)\n";
+    std::cout << "  Set inputs:              " << std::setw(10) << std::setprecision(2) << setInputTime << " ms ("
+              << std::setw(5) << std::setprecision(1) << (setInputTime / totalTime * 100) << "%)\n";
+    std::cout << "  Forward+Backward:        " << std::setw(10) << std::setprecision(2) << forwardTime << " ms ("
+              << std::setw(5) << std::setprecision(1) << (forwardTime / totalTime * 100) << "%)\n";
+    std::cout << "  Accumulate results:      " << std::setw(10) << std::setprecision(2) << accumulateTime << " ms ("
+              << std::setw(5) << std::setprecision(1) << (accumulateTime / totalTime * 100) << "%)\n";
+    std::cout << "  -------------------------\n";
+    std::cout << "  Execution (excl compile):" << std::setw(10) << std::setprecision(2) << execTime << " ms\n";
+    std::cout << "  Batches (4 paths each):  " << std::setw(10) << numBatches << "\n";
+    std::cout << "  Time per batch:          " << std::setw(10) << std::setprecision(2) << (execTime / numBatches * 1000) << " us\n";
+    std::cout << "  Time per path:           " << std::setw(10) << std::setprecision(2) << (execTime / nrTrails * 1000) << " us\n";
 
 #else
     std::cout << "\n  [Decomposition requires Forge JIT support]\n";
@@ -1280,7 +1322,11 @@ void printUsage(const char* progName)
     std::cout << "Options:\n";
     std::cout << "  --help, -h        Show this help message\n";
     std::cout << "  --quick           Run quick benchmark (fewer iterations, fewer path counts)\n";
+    std::cout << "  --large           Run larger swaption benchmark (5Y into 5Y instead of 1Y into 1Y)\n";
     std::cout << "  --decomposition   Run performance decomposition analysis\n";
+    std::cout << "\nBenchmarks:\n";
+    std::cout << "  Default:  1Y into 1Y swaption (10 forward rates, 8 time steps)\n";
+    std::cout << "  Large:    5Y into 5Y swaption (20 forward rates, 20 time steps)\n";
     std::cout << "\nThis benchmark compares AD approaches for swaption pricing.\n";
 #if defined(QLRISKS_HAS_FORGE)
     std::cout << "Build: With Forge JIT support\n";
@@ -1292,6 +1338,7 @@ void printUsage(const char* progName)
 int main(int argc, char** argv)
 {
     bool quickMode = false;
+    bool largeMode = false;
     bool decompositionMode = false;
 
     for (int i = 1; i < argc; ++i)
@@ -1304,12 +1351,21 @@ int main(int argc, char** argv)
         }
         else if (arg == "--quick")
             quickMode = true;
+        else if (arg == "--large")
+            largeMode = true;
         else if (arg == "--decomposition")
             decompositionMode = true;
     }
 
     BenchmarkConfig config;
 
+    // Apply large mode first (before quick mode adjustments)
+    if (largeMode)
+    {
+        config.setLargeConfig();
+    }
+
+    // Apply quick mode adjustments
     if (quickMode)
     {
         config.pathCounts = {100, 1000};
@@ -1339,8 +1395,10 @@ int main(int argc, char** argv)
     {
         std::cout << "\n  INSTRUMENT\n";
         std::cout << std::string(80, '-') << "\n";
-        std::cout << "  Instrument:   European swaption (1Y into 1Y)\n";
+        std::cout << "  Instrument:   " << config.instrumentDesc << "\n";
         std::cout << "  Model:        LIBOR Market Model (LMM)\n";
+        std::cout << "  Forward rates:" << config.size << " (semi-annual)\n";
+        std::cout << "  Time steps:   " << config.steps << "\n";
         std::cout << "  Inputs:       " << (config.numDeposits + config.numSwaps) << " market quotes\n";
 
         std::cout << "\n  BENCHMARK CONFIGURATION\n";
