@@ -196,7 +196,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=OFF \
             -DQLRISKS_ENABLE_FORGE=OFF \
             -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=OFF
 
       - name: Configure QuantLib (JIT ON, ForgeBackend)
@@ -221,7 +221,7 @@ jobs:
             -DQLRISKS_USE_FORGE_CAPI=ON \
             -DXAD_FORGE_USE_CAPI=ON \
             -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON
 
       - name: Build
@@ -233,7 +233,7 @@ jobs:
         run: |
           cd QuantLib/build
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone
 
   ##############################################################################
   # Windows Benchmarks
@@ -344,7 +344,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=OFF ^
             -DQLRISKS_ENABLE_FORGE=OFF ^
             -DQLRISKS_BUILD_TEST_SUITE=OFF ^
-            -DQLRISKS_BUILD_BENCHMARK=ON ^
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON ^
             -DQLRISKS_ENABLE_FORGE_TESTS=OFF
 
       - name: Configure QuantLib (JIT ON, ForgeBackend)
@@ -371,7 +371,7 @@ jobs:
             -DQLRISKS_USE_FORGE_CAPI=ON ^
             -DXAD_FORGE_USE_CAPI=ON ^
             -DQLRISKS_BUILD_TEST_SUITE=OFF ^
-            -DQLRISKS_BUILD_BENCHMARK=ON ^
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON ^
             -DQLRISKS_ENABLE_FORGE_TESTS=ON
 
       - name: Build
@@ -386,7 +386,7 @@ jobs:
         run: |
           cd QuantLib\build
           set PATH=%cd%\..\..\install\bin;%PATH%
-          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-benchmark.exe --log_level=message
+          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-benchmark-standalone.exe
 
   ##############################################################################
   # Performance Decomposition - Detailed timing breakdown
@@ -481,7 +481,7 @@ jobs:
             -DQLRISKS_USE_FORGE_CAPI=ON \
             -DXAD_FORGE_USE_CAPI=ON \
             -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON
 
       - name: Build
@@ -489,13 +489,11 @@ jobs:
           cd QuantLib/build
           cmake --build .
 
-      # TODO: Once standalone benchmark with --decomposition is implemented,
-      # change this to run with --decomposition flag
       - name: Run Performance Decomposition
         run: |
           cd QuantLib/build
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone --decomposition
 
   ##############################################################################
   # Compare Forge vs No-Forge - Statistical comparison
@@ -577,7 +575,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=OFF \
             -DQLRISKS_ENABLE_FORGE=OFF \
             -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=OFF
 
       - name: Build (Forge OFF)
@@ -617,7 +615,7 @@ jobs:
             -DQLRISKS_USE_FORGE_CAPI=ON \
             -DXAD_FORGE_USE_CAPI=ON \
             -DQLRISKS_BUILD_TEST_SUITE=OFF \
-            -DQLRISKS_BUILD_BENCHMARK=ON \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON
 
       - name: Build (Forge ON)
@@ -631,10 +629,10 @@ jobs:
           set -e
           cd QuantLib/build-off
           # warmup run
-          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone
           rm -f benchmark_off.log || true
           for i in $(seq 1 5) ; do \
-            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message | tee -a benchmark_off.log ; \
+            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone | tee -a benchmark_off.log ; \
           done
 
       - name: Run Benchmark (Forge ON)
@@ -643,10 +641,10 @@ jobs:
           cd QuantLib/build-on
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
           # warmup run
-          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone
           rm -f benchmark_on.log || true
           for i in $(seq 1 5) ; do \
-            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark --log_level=message | tee -a benchmark_on.log ; \
+            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone | tee -a benchmark_on.log ; \
           done
 
       # TODO: Update parsing once output format matches xad-jit style
