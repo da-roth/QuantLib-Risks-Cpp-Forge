@@ -103,7 +103,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.12
@@ -126,7 +126,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=${{ matrix.disable_aad }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/../../install \
@@ -146,7 +146,7 @@ jobs:
         if: ${{ matrix.disable_aad == 'OFF' }}
         run: |
           cd QuantLib/build
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-test-suite --log_level=message
 
       - name: Install
         if: ${{ matrix.disable_aad == 'OFF' }}
@@ -158,7 +158,7 @@ jobs:
         if: ${{ matrix.disable_aad == 'OFF' }}
         run: |
           mkdir installtest
-          cp QuantLib-Risks-Cpp/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
+          cp QuantLib-Risks-Cpp-Forge/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
           cd installtest
           echo "cmake_minimum_required(VERSION 3.15.2)" > CMakeLists.txt
           echo "project(QlTest LANGUAGES CXX)" >> CMakeLists.txt
@@ -206,7 +206,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: sccache
         uses: hendrikmuhs/ccache-action@v1.2.12
@@ -235,7 +235,7 @@ jobs:
           -DCMAKE_CXX_STANDARD=${{ matrix.cxx }} ^
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
           -DCMAKE_BUILD_TYPE=Release ^
-          -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp" ^
+          -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp-Forge" ^
           -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
           -DQL_NULL_AS_FUNCTIONS=ON ^
           -DXAD_STATIC_MSVC_RUNTIME=ON ^
@@ -261,7 +261,7 @@ jobs:
         run: |
           cd QuantLib\build
           call "${{ env.vsvarsall }}" amd64
-          .\QuantLib-Risks-Cpp\test-suite\quantlib-risks-test-suite --log_level=message
+          .\QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-test-suite --log_level=message
 
       - name: Install
         if: ${{ matrix.disable_aad == 'OFF' }}
@@ -276,7 +276,7 @@ jobs:
         shell: cmd
         run: |
           mkdir installtest
-          copy QuantLib-Risks-Cpp\Examples\AdjointSwap\AdjointSwapXAD.cpp installtest
+          copy QuantLib-Risks-Cpp-Forge\Examples\AdjointSwap\AdjointSwapXAD.cpp installtest
           cd installtest
           echo cmake_minimum_required(VERSION 3.15.2) > CMakeLists.txt
           echo project(QlTest LANGUAGES CXX) >> CMakeLists.txt
@@ -321,7 +321,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -343,7 +343,7 @@ jobs:
             -DQLRISKS_DISABLE_AAD=${{ matrix.disable_aad }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="${{ github.workspace }}/xad;${{ github.workspace }}/QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
@@ -363,7 +363,7 @@ jobs:
         if: ${{ matrix.disable_aad == 'OFF' }}
         run: |
           cd QuantLib/build
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-test-suite --log_level=message
 
       - name: Install
         if: ${{ matrix.disable_aad == 'OFF' }}
@@ -375,7 +375,7 @@ jobs:
         if: ${{ matrix.disable_aad == 'OFF' }}
         run: |
           mkdir installtest
-          cp QuantLib-Risks-Cpp/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
+          cp QuantLib-Risks-Cpp-Forge/Examples/AdjointSwap/AdjointSwapXAD.cpp installtest
           cd installtest
           echo "cmake_minimum_required(VERSION 3.15.2)" > CMakeLists.txt
           echo "project(QlTest LANGUAGES CXX)" >> CMakeLists.txt
@@ -416,7 +416,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -437,7 +437,7 @@ jobs:
             -DQL_USE_STD_CLASSES=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             ..
@@ -455,7 +455,7 @@ jobs:
       - name: Test QuantLib-Risks
         run: |
           cd QuantLib/build
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-test-suite --log_level=message
 
   ##############################################################################
   # Linux - XAD + Forge JIT
@@ -504,10 +504,10 @@ jobs:
           ref: ${{ env.xad_forge_branch }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.12
@@ -541,7 +541,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../../xad;$(pwd)/../../xad-forge;$(pwd)/../../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -563,7 +563,7 @@ jobs:
       - name: Test QuantLib-Risks
         run: |
           cd QuantLib/build
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-test-suite --log_level=message
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-test-suite --log_level=message
 
   ##############################################################################
   # Windows - XAD + Forge JIT
@@ -614,10 +614,10 @@ jobs:
           ref: ${{ env.xad_forge_branch }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: choco install -y ninja
@@ -654,7 +654,7 @@ jobs:
             -DXAD_ENABLE_JIT=ON ^
             -DXAD_STATIC_MSVC_RUNTIME=ON ^
             -DCMAKE_PREFIX_PATH="%cd%\..\install" ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
             -DQL_NULL_AS_FUNCTIONS=ON ^
             -DQL_BUILD_TEST_SUITE=OFF ^
@@ -679,4 +679,4 @@ jobs:
         run: |
           cd QuantLib\build
           set PATH=%cd%\..\..\install\bin;%PATH%
-          QuantLib-Risks-Cpp\test-suite\quantlib-risks-test-suite.exe --log_level=message
+          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-test-suite.exe --log_level=message

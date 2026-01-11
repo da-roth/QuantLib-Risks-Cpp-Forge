@@ -137,10 +137,10 @@ jobs:
           ref: ${{ env.QLRISKS_BRANCH }}
           path: QuantLib-Risks-Cpp
 
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for benchmark code)
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -156,19 +156,19 @@ jobs:
       - name: Patch benchmark into original QuantLib-Risks-Cpp
         run: |
           # Copy standalone benchmark files from Forge repo to original
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp \
              QuantLib-Risks-Cpp/test-suite/
 
           # Add standalone benchmark target to CMakeLists.txt
           cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
 
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
+          # Standalone benchmark (patched from QuantLib-Risks-Cpp-Forge)
           add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
           set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
               OUTPUT_NAME "quantlib-risks-benchmark-standalone")
@@ -252,10 +252,10 @@ jobs:
           ref: ${{ env.XAD_FORGE_BRANCH }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -288,7 +288,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -311,7 +311,7 @@ jobs:
         run: |
           cd QuantLib/build
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone
 
   ##############################################################################
   # Windows, QL + XAD (True Baseline)
@@ -345,10 +345,10 @@ jobs:
           ref: ${{ env.QLRISKS_BRANCH }}
           path: QuantLib-Risks-Cpp
 
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for benchmark code)
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: choco install -y ninja
@@ -364,15 +364,15 @@ jobs:
         shell: pwsh
         run: |
           # Copy standalone benchmark files from Forge repo to original
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp" "QuantLib-Risks-Cpp/test-suite/"
 
           # Add standalone benchmark target to CMakeLists.txt
           $cmakeAddition = @"
 
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
+          # Standalone benchmark (patched from QuantLib-Risks-Cpp-Forge)
           add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
           set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
               OUTPUT_NAME "quantlib-risks-benchmark-standalone")
@@ -454,10 +454,10 @@ jobs:
           ref: ${{ env.XAD_FORGE_BRANCH }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: choco install -y ninja
@@ -494,7 +494,7 @@ jobs:
             -DXAD_ENABLE_JIT=ON ^
             -DXAD_STATIC_MSVC_RUNTIME=ON ^
             -DCMAKE_PREFIX_PATH="%cd%\..\install" ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%cd%\..\xad;%cd%\..\xad-forge;%cd%\..\QuantLib-Risks-Cpp-Forge" ^
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
             -DQL_NULL_AS_FUNCTIONS=ON ^
             -DQL_BUILD_TEST_SUITE=OFF ^
@@ -520,7 +520,7 @@ jobs:
         run: |
           cd QuantLib\build
           set PATH=%cd%\..\..\install\bin;%PATH%
-          QuantLib-Risks-Cpp\test-suite\quantlib-risks-benchmark-standalone.exe
+          QuantLib-Risks-Cpp-Forge\test-suite\quantlib-risks-benchmark-standalone.exe
 
   ##############################################################################
   # Performance Decomposition - Detailed timing breakdown (XAD-Forge)
@@ -567,10 +567,10 @@ jobs:
           ref: ${{ env.XAD_FORGE_BRANCH }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -603,7 +603,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -626,7 +626,7 @@ jobs:
         run: |
           cd QuantLib/build
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone --decomposition
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone --decomposition
 
   ##############################################################################
   # Compare XAD vs XAD-Forge - Statistical comparison
@@ -680,10 +680,10 @@ jobs:
           ref: ${{ env.XAD_FORGE_BRANCH }}
           path: xad-forge
 
-      - name: Checkout QuantLib-Risks-Cpp
+      - name: Checkout QuantLib-Risks-Cpp-Forge
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: |
@@ -699,18 +699,18 @@ jobs:
       # --- Build QL + XAD (baseline) ---
       - name: Patch benchmark into original QuantLib-Risks-Cpp
         run: |
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.cpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/utilities_xad.hpp \
              QuantLib-Risks-Cpp/test-suite/
 
           cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
 
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
+          # Standalone benchmark (patched from QuantLib-Risks-Cpp-Forge)
           add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
           set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
               OUTPUT_NAME "quantlib-risks-benchmark-standalone")
@@ -763,7 +763,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -800,10 +800,10 @@ jobs:
           cd QuantLib/build-forge
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
           # warmup run
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone --quick
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone --quick
           rm -f benchmark_forge.log || true
           for i in $(seq 1 5) ; do \
-            ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone | tee -a benchmark_forge.log ; \
+            ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-standalone | tee -a benchmark_forge.log ; \
           done
 
       - name: Compare Results
@@ -878,10 +878,10 @@ jobs:
           ref: ${{ env.QLRISKS_BRANCH }}
           path: QuantLib-Risks-Cpp
 
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for benchmark code)
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Checkout Forge
         uses: actions/checkout@v4
@@ -1136,9 +1136,9 @@ jobs:
       # =========================================================================
       - name: Patch benchmark into QuantLib-Risks-Cpp
         run: |
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp \
              QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
+          cp QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp \
              QuantLib-Risks-Cpp/test-suite/
 
           cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
@@ -1632,10 +1632,10 @@ jobs:
           ref: ${{ env.QLRISKS_BRANCH }}
           path: QuantLib-Risks-Cpp
 
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp-Forge (for benchmark code)
         uses: actions/checkout@v4
         with:
-          path: QuantLib-Risks-Cpp
+          path: QuantLib-Risks-Cpp-Forge
 
       - name: Setup
         run: choco install -y ninja
@@ -1863,8 +1863,8 @@ jobs:
       - name: Patch benchmark into QuantLib-Risks-Cpp
         shell: pwsh
         run: |
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
+          Copy-Item "QuantLib-Risks-Cpp-Forge/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
 
           $cmakeAddition = @"
 
