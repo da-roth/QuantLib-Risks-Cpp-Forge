@@ -924,7 +924,7 @@ jobs:
 
       - name: Create JIT forward-only benchmark
         run: |
-          cat > QuantLib-Risks-Cpp/test-suite/benchmark_jit_forward.cpp << 'EOFCPP'
+          cat > QuantLib-Risks-Cpp-Forge/test-suite/benchmark_jit_forward.cpp << 'EOFCPP'
           /*
            * JIT forward-only benchmark using Forge (no derivatives computed)
            * Measures JIT kernel execution overhead vs plain double and AReal
@@ -1154,9 +1154,9 @@ jobs:
           }
           EOFCPP
 
-      - name: Add JIT benchmark target to QuantLib-Risks CMakeLists
+      - name: Add JIT benchmark target to QuantLib-Risks-Cpp-Forge CMakeLists
         run: |
-          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
+          cat >> QuantLib-Risks-Cpp-Forge/test-suite/CMakeLists.txt << 'EOF'
 
           # JIT forward-only benchmark for type overhead comparison
           add_executable(QuantLib-Risks_benchmark_jit benchmark_jit_forward.cpp)
@@ -1178,7 +1178,7 @@ jobs:
             -DXAD_WARNINGS_PARANOID=OFF \
             -DXAD_ENABLE_JIT=ON \
             -DCMAKE_PREFIX_PATH=$(pwd)/../install \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp-Forge" \
             -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
             -DQL_NULL_AS_FUNCTIONS=ON \
             -DQL_BUILD_TEST_SUITE=OFF \
@@ -1485,7 +1485,7 @@ jobs:
           echo "===== Running Forge JIT benchmark ====="
           cd ../build-jit
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-jit > jit_results.txt 2>&1
+          ./QuantLib-Risks-Cpp-Forge/test-suite/quantlib-risks-benchmark-jit > jit_results.txt 2>&1
           cat jit_results.txt
 
       - name: Generate Comparison Report
