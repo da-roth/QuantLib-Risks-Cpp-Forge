@@ -1164,6 +1164,7 @@ jobs:
               OUTPUT_NAME "quantlib-risks-benchmark-jit")
           target_link_libraries(QuantLib-Risks_benchmark_jit PRIVATE
               ql_library
+              QLRisks::forge
               ${QL_THREAD_LIBRARIES})
           EOF
 
