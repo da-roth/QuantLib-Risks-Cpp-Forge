@@ -839,12 +839,12 @@ jobs:
           path: benchmark_results.md
 
   ##############################################################################
-  # Linux, double vs AReal (no diff)
-  # Compares plain double vs xad::AReal<double> on same hardware
-  # This measures the overhead of the XAD type system in passive mode
+  # Linux, double vs AReal vs JIT (no diff)
+  # Compares plain double vs xad::AReal<double> vs Forge JIT on same hardware
+  # This measures the overhead of the XAD type system and JIT execution
   ##############################################################################
   linux-type-overhead:
-    name: Linux, double vs AReal (no diff)
+    name: Linux, double vs AReal vs JIT (no diff)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/lballabio/quantlib-devenv:rolling
@@ -882,6 +882,20 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: QuantLib-Risks-Cpp
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
 
       - name: Setup
         run: |
@@ -1161,7 +1175,292 @@ jobs:
           cmake --build . --target QuantLib-Risks_benchmark_standalone
 
       # =========================================================================
-      # Run both benchmarks and compare
+      # Build 3: QuantLib-Risks with Forge JIT (forward-only execution)
+      # =========================================================================
+      - name: Build Forge C API
+        run: |
+          cd forge
+          cmake -B build -S api/c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFORGE_CAPI_BUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
+          cmake --build build
+          cmake --install build
+
+      - name: Create JIT forward-only benchmark
+        run: |
+          mkdir -p QuantLib/test-suite-jit
+          cat > QuantLib/test-suite-jit/benchmark_jit_forward.cpp << 'EOFCPP'
+          /*
+           * JIT forward-only benchmark using Forge (no derivatives computed)
+           * Measures JIT kernel execution overhead vs plain double and AReal
+           */
+          #include <ql/quantlib.hpp>
+          #include <XAD/XAD.hpp>
+          #include <xad-forge/ForgeBackend.hpp>
+          #include <chrono>
+          #include <iostream>
+          #include <iomanip>
+          #include <vector>
+          #include <numeric>
+          #include <cmath>
+          #include <algorithm>
+
+          using namespace QuantLib;
+
+          inline double value(double x) { return x; }
+          template<class T> inline double value(const T& x) { return x.getValue(); }
+
+          double computeMean(const std::vector<double>& v) {
+              if (v.empty()) return 0.0;
+              return std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+          }
+
+          ext::shared_ptr<IborIndex> makeIndex(std::vector<Date> dates, const std::vector<Rate>& rates) {
+              DayCounter dayCounter = Actual360();
+              RelinkableHandle<YieldTermStructure> termStructure;
+              ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+              Date todaysDate = index->fixingCalendar().adjust(Date(4, September, 2005));
+              Settings::instance().evaluationDate() = todaysDate;
+              dates[0] = index->fixingCalendar().advance(todaysDate, index->fixingDays(), Days);
+              termStructure.linkTo(ext::make_shared<ZeroCurve>(dates, rates, dayCounter));
+              return index;
+          }
+
+          void runBenchmark(Size size, Size i_opt, Size j_opt, Size steps, int curveEndYears,
+                            std::vector<std::pair<int, double>>& results) {
+              using Clock = std::chrono::high_resolution_clock;
+              using Duration = std::chrono::duration<double, std::milli>;
+
+              Calendar calendar = TARGET();
+              Date todaysDate(4, September, 2005);
+              Settings::instance().evaluationDate() = todaysDate;
+              Integer fixingDays = 2;
+              Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
+              DayCounter dayCounter = Actual360();
+
+              // Same zero rates as double benchmark
+              std::vector<Rate> baseZeroRates = {0.035, 0.0575};
+              std::vector<Date> baseDates = {settlementDate, settlementDate + curveEndYears * Years};
+              auto baseIndex = makeIndex(baseDates, baseZeroRates);
+
+              ext::shared_ptr<LiborForwardModelProcess> process(
+                  new LiborForwardModelProcess(size, baseIndex));
+              process->setCovarParam(ext::make_shared<LfmCovarianceProxy>(
+                  ext::make_shared<LmLinearExponentialVolatilityModel>(
+                      process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                  ext::make_shared<LmExponentialCorrelationModel>(size, 0.5)));
+
+              std::vector<Time> fixingTimes = process->fixingTimes();
+              TimeGrid grid(fixingTimes.begin(), fixingTimes.end(), steps);
+
+              std::vector<Size> location;
+              for (Size idx = 0; idx < fixingTimes.size(); ++idx)
+                  location.push_back(std::find(grid.begin(), grid.end(), fixingTimes[idx]) - grid.begin());
+
+              Size numFactors = process->factors();
+              Size exerciseStep = location[i_opt];
+              Size fullGridSteps = grid.size() - 1;
+              Size fullGridRandoms = fullGridSteps * numFactors;
+
+              BusinessDayConvention convention = baseIndex->businessDayConvention();
+              Date fwdStart = settlementDate + Period(6 * i_opt, Months);
+              Date fwdMaturity = fwdStart + Period(6 * j_opt, Months);
+              Schedule schedule(fwdStart, fwdMaturity, baseIndex->tenor(), calendar,
+                                convention, convention, DateGeneration::Forward, false);
+
+              std::vector<double> accrualStart(size), accrualEnd(size);
+              for (Size k = 0; k < size; ++k) {
+                  accrualStart[k] = value(process->accrualStartTimes()[k]);
+                  accrualEnd[k] = value(process->accrualEndTimes()[k]);
+              }
+
+              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000};
+              Size maxPaths = 100000;
+
+              // Pre-generate random numbers
+              std::cerr << "  Generating randoms..." << std::flush;
+              typedef PseudoRandom::rsg_type rsg_type;
+              rsg_type rsg = PseudoRandom::make_sequence_generator(fullGridRandoms, BigNatural(42));
+              std::vector<std::vector<double>> allRandoms(maxPaths);
+              for (Size n = 0; n < maxPaths; ++n) {
+                  allRandoms[n].resize(fullGridRandoms);
+                  const auto& seq = rsg.nextSequence();
+                  for (Size m = 0; m < fullGridRandoms; ++m)
+                      allRandoms[n][m] = value(seq.value[m]);
+              }
+              std::cerr << " Done." << std::endl;
+
+              // Get swap rate and initial rates
+              ext::shared_ptr<VanillaSwap> fwdSwap(
+                  new VanillaSwap(Swap::Receiver, 1.0, schedule, 0.05, dayCounter,
+                                  schedule, baseIndex, 0.0, baseIndex->dayCounter()));
+              fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+                  baseIndex->forwardingTermStructure()));
+              double swapRateVal = value(fwdSwap->fairRate());
+              Array initRates = process->initialValues();
+
+              size_t warmupIters = 2, benchIters = 5;
+
+              for (size_t tc = 0; tc < pathCounts.size(); ++tc) {
+                  Size nrTrails = pathCounts[tc];
+                  std::vector<double> times;
+
+                  for (size_t iter = 0; iter < warmupIters + benchIters; ++iter) {
+                      auto t_start = Clock::now();
+
+                      // Build JIT kernel (graph recording) - included in timing
+                      auto forgeBackend = std::make_unique<xad::forge::ForgeBackend<double>>(false);
+                      xad::JITCompiler<double> jit(std::move(forgeBackend));
+
+                      std::vector<xad::AD> jit_initRates(size);
+                      xad::AD jit_swapRate;
+                      std::vector<xad::AD> jit_randoms(fullGridRandoms);
+
+                      for (Size k = 0; k < size; ++k) {
+                          jit_initRates[k] = xad::AD(value(initRates[k]));
+                          jit.registerInput(jit_initRates[k]);
+                      }
+                      jit_swapRate = xad::AD(swapRateVal);
+                      jit.registerInput(jit_swapRate);
+                      for (Size m = 0; m < fullGridRandoms; ++m) {
+                          jit_randoms[m] = xad::AD(0.0);
+                          jit.registerInput(jit_randoms[m]);
+                      }
+
+                      jit.newRecording();
+
+                      std::vector<xad::AD> asset_jit(size);
+                      std::vector<xad::AD> assetAtExercise_jit(size);
+                      for (Size k = 0; k < size; ++k) asset_jit[k] = jit_initRates[k];
+
+                      for (Size step = 1; step <= fullGridSteps; ++step) {
+                          Size offset = (step - 1) * numFactors;
+                          Time t = grid[step - 1];
+                          Time dt = grid.dt(step - 1);
+
+                          Array dw(numFactors);
+                          for (Size f = 0; f < numFactors; ++f)
+                              dw[f] = jit_randoms[offset + f];
+
+                          Array asset_arr(size);
+                          for (Size k = 0; k < size; ++k) asset_arr[k] = asset_jit[k];
+
+                          Array evolved = process->evolve(t, asset_arr, dt, dw);
+                          for (Size k = 0; k < size; ++k) asset_jit[k] = evolved[k];
+
+                          if (step == exerciseStep) {
+                              for (Size k = 0; k < size; ++k)
+                                  assetAtExercise_jit[k] = asset_jit[k];
+                          }
+                      }
+
+                      std::vector<xad::AD> dis_jit(size);
+                      xad::AD df_jit = xad::AD(1.0);
+                      for (Size k = 0; k < size; ++k) {
+                          double accrual = accrualEnd[k] - accrualStart[k];
+                          df_jit = df_jit / (xad::AD(1.0) + assetAtExercise_jit[k] * accrual);
+                          dis_jit[k] = df_jit;
+                      }
+
+                      xad::AD jit_npv = xad::AD(0.0);
+                      for (Size m = i_opt; m < i_opt + j_opt; ++m) {
+                          double accrual = accrualEnd[m] - accrualStart[m];
+                          jit_npv = jit_npv + (jit_swapRate - assetAtExercise_jit[m]) * accrual * dis_jit[m];
+                      }
+
+                      xad::AD jit_payoff = xad::less(jit_npv, xad::AD(0.0)).If(xad::AD(0.0), jit_npv);
+                      jit.registerOutput(jit_payoff);
+                      jit.compile();
+
+                      // MC execution
+                      double mcPrice = 0.0;
+                      for (Size n = 0; n < nrTrails; ++n) {
+                          // Set inputs
+                          for (Size k = 0; k < size; ++k)
+                              xad::value(jit_initRates[k]) = value(initRates[k]);
+                          xad::value(jit_swapRate) = swapRateVal;
+                          for (Size m = 0; m < fullGridRandoms; ++m)
+                              xad::value(jit_randoms[m]) = allRandoms[n][m];
+
+                          // Forward only - no derivatives
+                          double payoff_value;
+                          jit.forward(&payoff_value);
+                          mcPrice += payoff_value;
+                      }
+                      (void)mcPrice;
+
+                      auto t_end = Clock::now();
+                      if (iter >= warmupIters)
+                          times.push_back(Duration(t_end - t_start).count());
+                  }
+                  results.push_back({pathCounts[tc], computeMean(times)});
+              }
+          }
+
+          int main() {
+              std::vector<std::pair<int, double>> smallResults, largeResults;
+
+              std::cerr << "Running small swaption JIT benchmark..." << std::endl;
+              runBenchmark(10, 2, 2, 8, 6, smallResults);
+
+              std::cerr << "Running large swaption JIT benchmark..." << std::endl;
+              runBenchmark(20, 10, 10, 20, 12, largeResults);
+
+              // Output results in parseable format
+              std::cout << "JIT_SMALL:";
+              for (auto& r : smallResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              std::cout << "JIT_LARGE:";
+              for (auto& r : largeResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              return 0;
+          }
+          EOFCPP
+
+      - name: Configure QuantLib (xad-forge JIT)
+        run: |
+          cd QuantLib
+          cmake -B build-jit -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=ON \
+            -DCMAKE_PREFIX_PATH=$(pwd)/../install \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
+            -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
+            -DQLRISKS_BUILD_TEST_SUITE=OFF \
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
+            -DQLRISKS_ENABLE_FORGE_TESTS=ON
+
+      - name: Add JIT benchmark target
+        run: |
+          cat >> QuantLib/CMakeLists.txt << 'EOF'
+
+          # JIT forward-only benchmark for type overhead comparison
+          add_executable(benchmark_jit test-suite-jit/benchmark_jit_forward.cpp)
+          target_link_libraries(benchmark_jit PRIVATE ql_library ${QL_THREAD_LIBRARIES})
+          target_include_directories(benchmark_jit PRIVATE ${CMAKE_SOURCE_DIR}/../xad-forge/include)
+          EOF
+
+      - name: Build QuantLib-Risks with JIT benchmark
+        run: |
+          cd QuantLib/build-jit
+          cmake --build . --target benchmark_jit
+
+      # =========================================================================
+      # Run all three benchmarks and compare
       # =========================================================================
       - name: Run Benchmarks
         run: |
@@ -1177,6 +1476,13 @@ jobs:
           cd ../build-xad
           ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone --pricing-only > xad_results.txt 2>&1
           cat xad_results.txt
+
+          echo ""
+          echo "===== Running Forge JIT benchmark ====="
+          cd ../build-jit
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./benchmark_jit > jit_results.txt 2>&1
+          cat jit_results.txt
 
       - name: Generate Comparison Report
         run: |
@@ -1220,27 +1526,44 @@ jobs:
           A_L_10K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+10K \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_L_100K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+100K \|" | awk -F'|' '{print $4}' | tr -d ' ')
 
+          # Parse JIT results (format: 10=0.0437;100=0.439;...)
+          JIT_SMALL=$(grep "^JIT_SMALL:" build-jit/jit_results.txt | sed 's/JIT_SMALL://')
+          JIT_LARGE=$(grep "^JIT_LARGE:" build-jit/jit_results.txt | sed 's/JIT_LARGE://')
+
+          J_S_10=$(echo "$JIT_SMALL" | grep -oP '10=\K[0-9.]+')
+          J_S_100=$(echo "$JIT_SMALL" | grep -oP '100=\K[0-9.]+')
+          J_S_1K=$(echo "$JIT_SMALL" | grep -oP '1000=\K[0-9.]+')
+          J_S_10K=$(echo "$JIT_SMALL" | grep -oP '10000=\K[0-9.]+')
+          J_S_100K=$(echo "$JIT_SMALL" | grep -oP '100000=\K[0-9.]+')
+
+          J_L_10=$(echo "$JIT_LARGE" | grep -oP '10=\K[0-9.]+')
+          J_L_100=$(echo "$JIT_LARGE" | grep -oP '100=\K[0-9.]+')
+          J_L_1K=$(echo "$JIT_LARGE" | grep -oP '1000=\K[0-9.]+')
+          J_L_10K=$(echo "$JIT_LARGE" | grep -oP '10000=\K[0-9.]+')
+          J_L_100K=$(echo "$JIT_LARGE" | grep -oP '100000=\K[0-9.]+')
+
           echo "================================================================================"
-          echo "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double>"
+          echo "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double> vs Forge JIT"
           echo "================================================================================"
           echo ""
           echo "This compares pricing-only performance (no derivatives) to measure"
-          echo "the overhead of using xad::AReal<double> instead of plain double."
-          echo "Both benchmarks ran on the same hardware in this job."
+          echo "the overhead of using xad::AReal<double> and Forge JIT instead of plain double."
+          echo "All benchmarks ran on the same hardware in this job."
           echo ""
           echo "================================================================================"
           echo "  SMALL SWAPTION (1Y into 1Y)"
           echo "================================================================================"
           echo ""
-          printf "| %6s | %12s | %12s | %10s |\n" "Paths" "double (ms)" "AReal (ms)" "Overhead"
-          printf "|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-----------:"
+          printf "| %6s | %12s | %12s | %12s | %12s | %12s |\n" "Paths" "double (ms)" "AReal (ms)" "JIT (ms)" "AReal OH" "JIT OH"
+          printf "|%s|%s|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-------------:" "-------------:" "-------------:"
 
-          for paths in "10 $D_S_10 $A_S_10" "100 $D_S_100 $A_S_100" "1K $D_S_1K $A_S_1K" "10K $D_S_10K $A_S_10K" "100K $D_S_100K $A_S_100K"; do
+          for paths in "10 $D_S_10 $A_S_10 $J_S_10" "100 $D_S_100 $A_S_100 $J_S_100" "1K $D_S_1K $A_S_1K $J_S_1K" "10K $D_S_10K $A_S_10K $J_S_10K" "100K $D_S_100K $A_S_100K $J_S_100K"; do
             set -- $paths
-            p=$1; d=$2; a=$3
-            if [ -n "$d" ] && [ -n "$a" ] && [ "$d" != "0" ]; then
-              overhead=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
-              printf "| %6s | %12.2f | %12.1f | %9s%% |\n" "$p" "$d" "$a" "$overhead"
+            p=$1; d=$2; a=$3; j=$4
+            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$j" ] && [ "$d" != "0" ]; then
+              areal_oh=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
+              jit_oh=$(awk "BEGIN {printf \"%.1f\", (($j - $d) / $d) * 100}")
+              printf "| %6s | %12.2f | %12.2f | %12.2f | %10s%% | %10s%% |\n" "$p" "$d" "$a" "$j" "$areal_oh" "$jit_oh"
             fi
           done
 
@@ -1249,15 +1572,16 @@ jobs:
           echo "  LARGE SWAPTION (5Y into 5Y)"
           echo "================================================================================"
           echo ""
-          printf "| %6s | %12s | %12s | %10s |\n" "Paths" "double (ms)" "AReal (ms)" "Overhead"
-          printf "|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-----------:"
+          printf "| %6s | %12s | %12s | %12s | %12s | %12s |\n" "Paths" "double (ms)" "AReal (ms)" "JIT (ms)" "AReal OH" "JIT OH"
+          printf "|%s|%s|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-------------:" "-------------:" "-------------:"
 
-          for paths in "10 $D_L_10 $A_L_10" "100 $D_L_100 $A_L_100" "1K $D_L_1K $A_L_1K" "10K $D_L_10K $A_L_10K" "100K $D_L_100K $A_L_100K"; do
+          for paths in "10 $D_L_10 $A_L_10 $J_L_10" "100 $D_L_100 $A_L_100 $J_L_100" "1K $D_L_1K $A_L_1K $J_L_1K" "10K $D_L_10K $A_L_10K $J_L_10K" "100K $D_L_100K $A_L_100K $J_L_100K"; do
             set -- $paths
-            p=$1; d=$2; a=$3
-            if [ -n "$d" ] && [ -n "$a" ] && [ "$d" != "0" ]; then
-              overhead=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
-              printf "| %6s | %12.2f | %12.1f | %9s%% |\n" "$p" "$d" "$a" "$overhead"
+            p=$1; d=$2; a=$3; j=$4
+            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$j" ] && [ "$d" != "0" ]; then
+              areal_oh=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
+              jit_oh=$(awk "BEGIN {printf \"%.1f\", (($j - $d) / $d) * 100}")
+              printf "| %6s | %12.2f | %12.2f | %12.2f | %10s%% | %10s%% |\n" "$p" "$d" "$a" "$j" "$areal_oh" "$jit_oh"
             fi
           done
 
@@ -1266,8 +1590,12 @@ jobs:
           echo "  SUMMARY"
           echo "================================================================================"
           echo ""
-          echo "Overhead represents the cost of using xad::AReal<double> instead of plain double,"
-          echo "even when not computing derivatives (passive mode, no tape recording)."
+          echo "Overhead (OH) represents the cost relative to plain double:"
+          echo "  - AReal OH: Cost of using xad::AReal<double> in passive mode (no tape recording)"
+          echo "  - JIT OH: Cost of Forge JIT (graph recording + compilation + forward execution)"
+          echo ""
+          echo "Note: JIT timing includes kernel compilation, which is a fixed cost that"
+          echo "      amortizes over more paths. This matches the AD benchmark methodology."
           echo ""
 
   ##############################################################################
