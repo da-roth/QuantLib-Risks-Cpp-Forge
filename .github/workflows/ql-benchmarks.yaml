@@ -130,14 +130,7 @@ jobs:
           ref: ${{ env.XAD_BRANCH }}
           path: xad
 
-      - name: Checkout QuantLib-Risks-Cpp (Original)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.QLRISKS_REPO }}
-          ref: ${{ env.QLRISKS_BRANCH }}
-          path: QuantLib-Risks-Cpp
-
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp
         uses: actions/checkout@v4
         with:
           path: QuantLib-Risks-Cpp
@@ -152,30 +145,6 @@ jobs:
         with:
           key: linux-ql-xad
           max-size: 650M
-
-      - name: Patch benchmark into original QuantLib-Risks-Cpp
-        run: |
-          # Copy standalone benchmark files from Forge repo to original
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp \
-             QuantLib-Risks-Cpp/test-suite/
-
-          # Add standalone benchmark target to CMakeLists.txt
-          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
-
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
-          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-              ql_library
-              ${QL_THREAD_LIBRARIES})
-          EOF
 
       - name: Configure QuantLib
         run: |
@@ -338,14 +307,7 @@ jobs:
           ref: ${{ env.XAD_BRANCH }}
           path: xad
 
-      - name: Checkout QuantLib-Risks-Cpp (Original)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.QLRISKS_REPO }}
-          ref: ${{ env.QLRISKS_BRANCH }}
-          path: QuantLib-Risks-Cpp
-
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp
         uses: actions/checkout@v4
         with:
           path: QuantLib-Risks-Cpp
@@ -359,28 +321,6 @@ jobs:
           (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
           Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
           echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
-
-      - name: Patch benchmark into original QuantLib-Risks-Cpp
-        shell: pwsh
-        run: |
-          # Copy standalone benchmark files from Forge repo to original
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp" "QuantLib-Risks-Cpp/test-suite/"
-
-          # Add standalone benchmark target to CMakeLists.txt
-          $cmakeAddition = @"
-
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
-          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-              ql_library
-              `${QL_THREAD_LIBRARIES})
-          "@
-          Add-Content -Path "QuantLib-Risks-Cpp/test-suite/CMakeLists.txt" -Value $cmakeAddition
 
       - name: Configure QuantLib
         shell: cmd
@@ -659,13 +599,6 @@ jobs:
           ref: ${{ env.XAD_BRANCH }}
           path: xad
 
-      - name: Checkout QuantLib-Risks-Cpp (Original)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.QLRISKS_REPO }}
-          ref: ${{ env.QLRISKS_BRANCH }}
-          path: QuantLib-Risks-Cpp
-
       - name: Checkout Forge
         uses: actions/checkout@v4
         with:
@@ -697,28 +630,6 @@ jobs:
           max-size: 650M
 
       # --- Build QL + XAD (baseline) ---
-      - name: Patch benchmark into original QuantLib-Risks-Cpp
-        run: |
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.cpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/utilities_xad.hpp \
-             QuantLib-Risks-Cpp/test-suite/
-
-          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
-
-          # Standalone benchmark (patched from QuantLib-Risks-Cpp)
-          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-              ql_library
-              ${QL_THREAD_LIBRARIES})
-          EOF
-
       - name: Configure QuantLib (QL + XAD)
         run: |
           cd QuantLib
@@ -871,14 +782,7 @@ jobs:
           ref: ${{ env.XAD_BRANCH }}
           path: xad
 
-      - name: Checkout QuantLib-Risks-Cpp (Original)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.QLRISKS_REPO }}
-          ref: ${{ env.QLRISKS_BRANCH }}
-          path: QuantLib-Risks-Cpp
-
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp
         uses: actions/checkout@v4
         with:
           path: QuantLib-Risks-Cpp
@@ -1120,23 +1024,6 @@ jobs:
       # =========================================================================
       # Build 2: QuantLib-Risks with xad::AReal<double>
       # =========================================================================
-      - name: Patch benchmark into QuantLib-Risks-Cpp
-        run: |
-          cp QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp \
-             QuantLib-Risks-Cpp/test-suite/
-          cp QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp \
-             QuantLib-Risks-Cpp/test-suite/
-
-          cat >> QuantLib-Risks-Cpp/test-suite/CMakeLists.txt << 'EOF'
-
-          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-              ql_library
-              ${QL_THREAD_LIBRARIES})
-          EOF
-
       - name: Configure QuantLib (xad::AReal)
         run: |
           cd QuantLib
@@ -1297,14 +1184,7 @@ jobs:
           ref: ${{ env.XAD_BRANCH }}
           path: xad
 
-      - name: Checkout QuantLib-Risks-Cpp (Original)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.QLRISKS_REPO }}
-          ref: ${{ env.QLRISKS_BRANCH }}
-          path: QuantLib-Risks-Cpp
-
-      - name: Checkout QuantLib-Risks-Cpp (for benchmark code)
+      - name: Checkout QuantLib-Risks-Cpp
         uses: actions/checkout@v4
         with:
           path: QuantLib-Risks-Cpp
@@ -1532,23 +1412,6 @@ jobs:
       # =========================================================================
       # Build 2: QuantLib-Risks with xad::AReal<double>
       # =========================================================================
-      - name: Patch benchmark into QuantLib-Risks-Cpp
-        shell: pwsh
-        run: |
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/benchmark_main.cpp" "QuantLib-Risks-Cpp/test-suite/"
-          Copy-Item "QuantLib-Risks-Cpp/test-suite/PlatformInfo.hpp" "QuantLib-Risks-Cpp/test-suite/"
-
-          $cmakeAddition = @"
-
-          add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-          set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-              OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-          target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-              ql_library
-              `${QL_THREAD_LIBRARIES})
-          "@
-          Add-Content -Path "QuantLib-Risks-Cpp/test-suite/CMakeLists.txt" -Value $cmakeAddition
-
       - name: Configure QuantLib (xad::AReal)
         shell: cmd
         run: |
