@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(testStage1_CurveBootstrapping)
     };
     for (size_t i = 0; i < datedOIS.size(); ++i) {
         auto quote = ext::make_shared<SimpleQuote>(datedOIS[i]);
-        eoniaInstruments.push_back(ext::make_shared<DatedOISRateHelper>(
+        eoniaInstruments.push_back(ext::make_shared<OISRateHelper>(
             datedOisPeriods[i].first, datedOisPeriods[i].second,
             Handle<Quote>(quote), eonia));
     }
@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE(testStage1_CurveBootstrapping)
         }
         for (size_t i = 0; i < dt.size(); ++i) {
             auto q = ext::make_shared<SimpleQuote>(dt[i]);
-            instruments.push_back(ext::make_shared<DatedOISRateHelper>(
+            instruments.push_back(ext::make_shared<OISRateHelper>(
                 datedOisPeriods[i].first, datedOisPeriods[i].second,
                 Handle<Quote>(q), eonia));
         }
