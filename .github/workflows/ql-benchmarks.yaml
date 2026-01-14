@@ -162,7 +162,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_BUILD_TEST_SUITE=ON
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON
 
       - name: Build
         run: |
@@ -340,7 +340,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF ^
             -DQL_BUILD_BENCHMARK=OFF ^
             -DQLRISKS_DISABLE_AAD=OFF ^
-            -DQLRISKS_BUILD_TEST_SUITE=ON
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON
 
       - name: Build
         shell: cmd
@@ -646,7 +646,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_BUILD_TEST_SUITE=ON
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON
 
       - name: Build (QL + XAD)
         run: |
@@ -1040,7 +1040,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_BUILD_TEST_SUITE=ON
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON
 
       - name: Build QuantLib-Risks (xad::AReal)
         run: |
@@ -1430,7 +1430,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF ^
             -DQL_BUILD_BENCHMARK=OFF ^
             -DQLRISKS_DISABLE_AAD=OFF ^
-            -DQLRISKS_BUILD_TEST_SUITE=ON
+            -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON
 
       - name: Build QuantLib-Risks (xad::AReal)
         shell: cmd
