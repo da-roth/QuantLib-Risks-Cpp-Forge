@@ -928,10 +928,12 @@ jobs:
           /*
            * JIT forward-only benchmark using Forge (no derivatives computed)
            * Measures JIT kernel execution overhead vs plain double and AReal
+           * Tests both scalar JIT and AVX2 JIT (4-path batching)
            */
           #include <ql/quantlib.hpp>
           #include <XAD/XAD.hpp>
           #include <xad-forge/ForgeBackend.hpp>
+          #include <xad-forge/ForgeBackendAVX.hpp>
           #include <chrono>
           #include <iostream>
           #include <iomanip>
@@ -961,8 +963,80 @@ jobs:
               return index;
           }
 
+          // Build JIT graph and return it (shared between scalar and AVX)
+          xad::Graph buildJitGraph(Size size, Size i_opt, Size j_opt, Size fullGridSteps, Size fullGridRandoms,
+                                   Size exerciseStep, Size numFactors,
+                                   const std::vector<double>& accrualStart, const std::vector<double>& accrualEnd,
+                                   const TimeGrid& grid, ext::shared_ptr<LiborForwardModelProcess>& process,
+                                   const Array& initRates, double swapRateVal,
+                                   xad::JITCompiler<double>& jit,
+                                   std::vector<xad::AD>& jit_initRates, xad::AD& jit_swapRate,
+                                   std::vector<xad::AD>& jit_randoms) {
+
+              jit_initRates.resize(size);
+              jit_randoms.resize(fullGridRandoms);
+
+              for (Size k = 0; k < size; ++k) {
+                  jit_initRates[k] = xad::AD(value(initRates[k]));
+                  jit.registerInput(jit_initRates[k]);
+              }
+              jit_swapRate = xad::AD(swapRateVal);
+              jit.registerInput(jit_swapRate);
+              for (Size m = 0; m < fullGridRandoms; ++m) {
+                  jit_randoms[m] = xad::AD(0.0);
+                  jit.registerInput(jit_randoms[m]);
+              }
+
+              jit.newRecording();
+
+              std::vector<xad::AD> asset_jit(size);
+              std::vector<xad::AD> assetAtExercise_jit(size);
+              for (Size k = 0; k < size; ++k) asset_jit[k] = jit_initRates[k];
+
+              for (Size step = 1; step <= fullGridSteps; ++step) {
+                  Size offset = (step - 1) * numFactors;
+                  Time t = grid[step - 1];
+                  Time dt = grid.dt(step - 1);
+
+                  Array dw(numFactors);
+                  for (Size f = 0; f < numFactors; ++f)
+                      dw[f] = jit_randoms[offset + f];
+
+                  Array asset_arr(size);
+                  for (Size k = 0; k < size; ++k) asset_arr[k] = asset_jit[k];
+
+                  Array evolved = process->evolve(t, asset_arr, dt, dw);
+                  for (Size k = 0; k < size; ++k) asset_jit[k] = evolved[k];
+
+                  if (step == exerciseStep) {
+                      for (Size k = 0; k < size; ++k)
+                          assetAtExercise_jit[k] = asset_jit[k];
+                  }
+              }
+
+              std::vector<xad::AD> dis_jit(size);
+              xad::AD df_jit = xad::AD(1.0);
+              for (Size k = 0; k < size; ++k) {
+                  double accrual = accrualEnd[k] - accrualStart[k];
+                  df_jit = df_jit / (xad::AD(1.0) + assetAtExercise_jit[k] * accrual);
+                  dis_jit[k] = df_jit;
+              }
+
+              xad::AD jit_npv = xad::AD(0.0);
+              for (Size m = i_opt; m < i_opt + j_opt; ++m) {
+                  double accrual = accrualEnd[m] - accrualStart[m];
+                  jit_npv = jit_npv + (jit_swapRate - assetAtExercise_jit[m]) * accrual * dis_jit[m];
+              }
+
+              xad::AD jit_payoff = xad::less(jit_npv, xad::AD(0.0)).If(xad::AD(0.0), jit_npv);
+              jit.registerOutput(jit_payoff);
+
+              return jit.getGraph();
+          }
+
           void runBenchmark(Size size, Size i_opt, Size j_opt, Size steps, int curveEndYears,
-                            std::vector<std::pair<int, double>>& results) {
+                            std::vector<std::pair<int, double>>& scalarResults,
+                            std::vector<std::pair<int, double>>& avxResults) {
               using Clock = std::chrono::high_resolution_clock;
               using Duration = std::chrono::duration<double, std::milli>;
 
@@ -1009,8 +1083,8 @@ jobs:
                   accrualEnd[k] = value(process->accrualEndTimes()[k]);
               }
 
-              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000};
-              Size maxPaths = 100000;
+              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000, 400000};
+              Size maxPaths = 400000;
 
               // Pre-generate random numbers
               std::cerr << "  Generating randoms..." << std::flush;
@@ -1036,6 +1110,10 @@ jobs:
 
               size_t warmupIters = 2, benchIters = 5;
 
+              // =====================================================================
+              // JIT Scalar benchmark
+              // =====================================================================
+              std::cerr << "    Running JIT Scalar..." << std::endl;
               for (size_t tc = 0; tc < pathCounts.size(); ++tc) {
                   Size nrTrails = pathCounts[tc];
                   std::vector<double> times;
@@ -1047,77 +1125,25 @@ jobs:
                       auto forgeBackend = std::make_unique<xad::forge::ForgeBackend<double>>(false);
                       xad::JITCompiler<double> jit(std::move(forgeBackend));
 
-                      std::vector<xad::AD> jit_initRates(size);
+                      std::vector<xad::AD> jit_initRates;
                       xad::AD jit_swapRate;
-                      std::vector<xad::AD> jit_randoms(fullGridRandoms);
+                      std::vector<xad::AD> jit_randoms;
 
-                      for (Size k = 0; k < size; ++k) {
-                          jit_initRates[k] = xad::AD(value(initRates[k]));
-                          jit.registerInput(jit_initRates[k]);
-                      }
-                      jit_swapRate = xad::AD(swapRateVal);
-                      jit.registerInput(jit_swapRate);
-                      for (Size m = 0; m < fullGridRandoms; ++m) {
-                          jit_randoms[m] = xad::AD(0.0);
-                          jit.registerInput(jit_randoms[m]);
-                      }
-
-                      jit.newRecording();
-
-                      std::vector<xad::AD> asset_jit(size);
-                      std::vector<xad::AD> assetAtExercise_jit(size);
-                      for (Size k = 0; k < size; ++k) asset_jit[k] = jit_initRates[k];
-
-                      for (Size step = 1; step <= fullGridSteps; ++step) {
-                          Size offset = (step - 1) * numFactors;
-                          Time t = grid[step - 1];
-                          Time dt = grid.dt(step - 1);
-
-                          Array dw(numFactors);
-                          for (Size f = 0; f < numFactors; ++f)
-                              dw[f] = jit_randoms[offset + f];
-
-                          Array asset_arr(size);
-                          for (Size k = 0; k < size; ++k) asset_arr[k] = asset_jit[k];
-
-                          Array evolved = process->evolve(t, asset_arr, dt, dw);
-                          for (Size k = 0; k < size; ++k) asset_jit[k] = evolved[k];
-
-                          if (step == exerciseStep) {
-                              for (Size k = 0; k < size; ++k)
-                                  assetAtExercise_jit[k] = asset_jit[k];
-                          }
-                      }
-
-                      std::vector<xad::AD> dis_jit(size);
-                      xad::AD df_jit = xad::AD(1.0);
-                      for (Size k = 0; k < size; ++k) {
-                          double accrual = accrualEnd[k] - accrualStart[k];
-                          df_jit = df_jit / (xad::AD(1.0) + assetAtExercise_jit[k] * accrual);
-                          dis_jit[k] = df_jit;
-                      }
-
-                      xad::AD jit_npv = xad::AD(0.0);
-                      for (Size m = i_opt; m < i_opt + j_opt; ++m) {
-                          double accrual = accrualEnd[m] - accrualStart[m];
-                          jit_npv = jit_npv + (jit_swapRate - assetAtExercise_jit[m]) * accrual * dis_jit[m];
-                      }
-
-                      xad::AD jit_payoff = xad::less(jit_npv, xad::AD(0.0)).If(xad::AD(0.0), jit_npv);
-                      jit.registerOutput(jit_payoff);
+                      buildJitGraph(size, i_opt, j_opt, fullGridSteps, fullGridRandoms,
+                                    exerciseStep, numFactors, accrualStart, accrualEnd,
+                                    grid, process, initRates, swapRateVal,
+                                    jit, jit_initRates, jit_swapRate, jit_randoms);
                       jit.compile();
 
                       // MC execution
                       double mcPrice = 0.0;
                       for (Size n = 0; n < nrTrails; ++n) {
-                          // Set inputs
                           for (Size k = 0; k < size; ++k)
                               xad::value(jit_initRates[k]) = value(initRates[k]);
                           xad::value(jit_swapRate) = swapRateVal;
                           for (Size m = 0; m < fullGridRandoms; ++m)
                               xad::value(jit_randoms[m]) = allRandoms[n][m];
 
-                          // Forward only - no derivatives
                           double payoff_value;
                           jit.forward(&payoff_value);
                           mcPrice += payoff_value;
@@ -1128,26 +1154,101 @@ jobs:
                       if (iter >= warmupIters)
                           times.push_back(Duration(t_end - t_start).count());
                   }
-                  results.push_back({pathCounts[tc], computeMean(times)});
+                  scalarResults.push_back({pathCounts[tc], computeMean(times)});
+              }
+
+              // =====================================================================
+              // JIT AVX2 benchmark (4-path batching)
+              // =====================================================================
+              std::cerr << "    Running JIT AVX2..." << std::endl;
+              constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX<double>::VECTOR_WIDTH;
+
+              for (size_t tc = 0; tc < pathCounts.size(); ++tc) {
+                  Size nrTrails = pathCounts[tc];
+                  std::vector<double> times;
+
+                  for (size_t iter = 0; iter < warmupIters + benchIters; ++iter) {
+                      auto t_start = Clock::now();
+
+                      // Build JIT graph (same as scalar)
+                      xad::JITCompiler<double> jit;
+
+                      std::vector<xad::AD> jit_initRates;
+                      xad::AD jit_swapRate;
+                      std::vector<xad::AD> jit_randoms;
+
+                      xad::Graph jitGraph = buildJitGraph(size, i_opt, j_opt, fullGridSteps, fullGridRandoms,
+                                    exerciseStep, numFactors, accrualStart, accrualEnd,
+                                    grid, process, initRates, swapRateVal,
+                                    jit, jit_initRates, jit_swapRate, jit_randoms);
+
+                      // Compile with AVX backend
+                      xad::forge::ForgeBackendAVX<double> avxBackend(false);
+                      avxBackend.compile(jitGraph);
+
+                      // MC execution with 4-path batching
+                      double mcPrice = 0.0;
+                      Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
+
+                      for (Size batch = 0; batch < numBatches; ++batch) {
+                          Size batchStart = batch * BATCH_SIZE;
+                          Size pathsInBatch = std::min(static_cast<Size>(BATCH_SIZE), nrTrails - batchStart);
+
+                          // Set inputs for all paths in batch
+                          for (int lane = 0; lane < BATCH_SIZE; ++lane) {
+                              Size pathIdx = batchStart + lane;
+                              if (pathIdx < nrTrails) {
+                                  for (Size k = 0; k < size; ++k)
+                                      avxBackend.setInput(jit_initRates[k].getSlot(), lane, value(initRates[k]));
+                                  avxBackend.setInput(jit_swapRate.getSlot(), lane, swapRateVal);
+                                  for (Size m = 0; m < fullGridRandoms; ++m)
+                                      avxBackend.setInput(jit_randoms[m].getSlot(), lane, allRandoms[pathIdx][m]);
+                              }
+                          }
+
+                          // Execute forward pass
+                          avxBackend.forward();
+
+                          // Accumulate results
+                          for (Size lane = 0; lane < pathsInBatch; ++lane) {
+                              double payoff_value = avxBackend.getOutput(0, lane);
+                              mcPrice += payoff_value;
+                          }
+                      }
+                      (void)mcPrice;
+
+                      auto t_end = Clock::now();
+                      if (iter >= warmupIters)
+                          times.push_back(Duration(t_end - t_start).count());
+                  }
+                  avxResults.push_back({pathCounts[tc], computeMean(times)});
               }
           }
 
           int main() {
-              std::vector<std::pair<int, double>> smallResults, largeResults;
+              std::vector<std::pair<int, double>> smallScalar, smallAVX, largeScalar, largeAVX;
 
               std::cerr << "Running small swaption JIT benchmark..." << std::endl;
-              runBenchmark(10, 2, 2, 8, 6, smallResults);
+              runBenchmark(10, 2, 2, 8, 6, smallScalar, smallAVX);
 
               std::cerr << "Running large swaption JIT benchmark..." << std::endl;
-              runBenchmark(20, 10, 10, 20, 12, largeResults);
+              runBenchmark(20, 10, 10, 20, 12, largeScalar, largeAVX);
 
               // Output results in parseable format
-              std::cout << "JIT_SMALL:";
-              for (auto& r : smallResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << "JIT_SCALAR_SMALL:";
+              for (auto& r : smallScalar) std::cout << r.first << "=" << r.second << ";";
               std::cout << std::endl;
 
-              std::cout << "JIT_LARGE:";
-              for (auto& r : largeResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << "JIT_AVX_SMALL:";
+              for (auto& r : smallAVX) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              std::cout << "JIT_SCALAR_LARGE:";
+              for (auto& r : largeScalar) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              std::cout << "JIT_AVX_LARGE:";
+              for (auto& r : largeAVX) std::cout << r.first << "=" << r.second << ";";
               std::cout << std::endl;
 
               return 0;
@@ -1307,8 +1408,8 @@ jobs:
                   accrualEnd[k] = process->accrualEndTimes()[k];
               }
 
-              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000};
-              Size maxPaths = 100000;
+              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000, 400000};
+              Size maxPaths = 400000;
 
               std::cerr << "  Generating randoms..." << std::flush;
               typedef PseudoRandom::rsg_type rsg_type;
@@ -1503,15 +1604,16 @@ jobs:
           D_S_1K=$(echo "$DOUBLE_SMALL" | grep -oP '1000=\K[0-9.]+')
           D_S_10K=$(echo "$DOUBLE_SMALL" | grep -oP '10000=\K[0-9.]+')
           D_S_100K=$(echo "$DOUBLE_SMALL" | grep -oP '100000=\K[0-9.]+')
+          D_S_400K=$(echo "$DOUBLE_SMALL" | grep -oP '400000=\K[0-9.]+')
 
           D_L_10=$(echo "$DOUBLE_LARGE" | grep -oP '10=\K[0-9.]+')
           D_L_100=$(echo "$DOUBLE_LARGE" | grep -oP '100=\K[0-9.]+')
           D_L_1K=$(echo "$DOUBLE_LARGE" | grep -oP '1000=\K[0-9.]+')
           D_L_10K=$(echo "$DOUBLE_LARGE" | grep -oP '10000=\K[0-9.]+')
           D_L_100K=$(echo "$DOUBLE_LARGE" | grep -oP '100000=\K[0-9.]+')
+          D_L_400K=$(echo "$DOUBLE_LARGE" | grep -oP '400000=\K[0-9.]+')
 
           # Parse AReal results (extract Mean values from table lines like "|     10 |   Pricing |      0.1 |")
-          # Get small swaption results (first set of results)
           AREAL_RESULTS=$(cat build-xad/xad_results.txt)
 
           # Extract pricing times from the output - look for lines with "Pricing" and extract the mean
@@ -1523,51 +1625,77 @@ jobs:
           A_S_1K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+1K \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_S_10K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+10K \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_S_100K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+100K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_S_400K=$(echo "$SMALL_SECTION" | grep -E "^\|[[:space:]]+400K \|" | awk -F'|' '{print $4}' | tr -d ' ')
 
           A_L_10=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+10 \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_L_100=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+100 \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_L_1K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+1K \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_L_10K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+10K \|" | awk -F'|' '{print $4}' | tr -d ' ')
           A_L_100K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+100K \|" | awk -F'|' '{print $4}' | tr -d ' ')
+          A_L_400K=$(echo "$LARGE_SECTION" | grep -E "^\|[[:space:]]+400K \|" | awk -F'|' '{print $4}' | tr -d ' ')
 
-          # Parse JIT results (format: 10=0.0437;100=0.439;...)
-          JIT_SMALL=$(grep "^JIT_SMALL:" build-jit/jit_results.txt | sed 's/JIT_SMALL://')
-          JIT_LARGE=$(grep "^JIT_LARGE:" build-jit/jit_results.txt | sed 's/JIT_LARGE://')
+          # Parse JIT Scalar results (format: 10=0.0437;100=0.439;...)
+          JIT_SCALAR_SMALL=$(grep "^JIT_SCALAR_SMALL:" build-jit/jit_results.txt | sed 's/JIT_SCALAR_SMALL://')
+          JIT_SCALAR_LARGE=$(grep "^JIT_SCALAR_LARGE:" build-jit/jit_results.txt | sed 's/JIT_SCALAR_LARGE://')
 
-          J_S_10=$(echo "$JIT_SMALL" | grep -oP '10=\K[0-9.]+')
-          J_S_100=$(echo "$JIT_SMALL" | grep -oP '100=\K[0-9.]+')
-          J_S_1K=$(echo "$JIT_SMALL" | grep -oP '1000=\K[0-9.]+')
-          J_S_10K=$(echo "$JIT_SMALL" | grep -oP '10000=\K[0-9.]+')
-          J_S_100K=$(echo "$JIT_SMALL" | grep -oP '100000=\K[0-9.]+')
+          JS_S_10=$(echo "$JIT_SCALAR_SMALL" | grep -oP '10=\K[0-9.]+')
+          JS_S_100=$(echo "$JIT_SCALAR_SMALL" | grep -oP '100=\K[0-9.]+')
+          JS_S_1K=$(echo "$JIT_SCALAR_SMALL" | grep -oP '1000=\K[0-9.]+')
+          JS_S_10K=$(echo "$JIT_SCALAR_SMALL" | grep -oP '10000=\K[0-9.]+')
+          JS_S_100K=$(echo "$JIT_SCALAR_SMALL" | grep -oP '100000=\K[0-9.]+')
+          JS_S_400K=$(echo "$JIT_SCALAR_SMALL" | grep -oP '400000=\K[0-9.]+')
 
-          J_L_10=$(echo "$JIT_LARGE" | grep -oP '10=\K[0-9.]+')
-          J_L_100=$(echo "$JIT_LARGE" | grep -oP '100=\K[0-9.]+')
-          J_L_1K=$(echo "$JIT_LARGE" | grep -oP '1000=\K[0-9.]+')
-          J_L_10K=$(echo "$JIT_LARGE" | grep -oP '10000=\K[0-9.]+')
-          J_L_100K=$(echo "$JIT_LARGE" | grep -oP '100000=\K[0-9.]+')
+          JS_L_10=$(echo "$JIT_SCALAR_LARGE" | grep -oP '10=\K[0-9.]+')
+          JS_L_100=$(echo "$JIT_SCALAR_LARGE" | grep -oP '100=\K[0-9.]+')
+          JS_L_1K=$(echo "$JIT_SCALAR_LARGE" | grep -oP '1000=\K[0-9.]+')
+          JS_L_10K=$(echo "$JIT_SCALAR_LARGE" | grep -oP '10000=\K[0-9.]+')
+          JS_L_100K=$(echo "$JIT_SCALAR_LARGE" | grep -oP '100000=\K[0-9.]+')
+          JS_L_400K=$(echo "$JIT_SCALAR_LARGE" | grep -oP '400000=\K[0-9.]+')
+
+          # Parse JIT AVX results
+          JIT_AVX_SMALL=$(grep "^JIT_AVX_SMALL:" build-jit/jit_results.txt | sed 's/JIT_AVX_SMALL://')
+          JIT_AVX_LARGE=$(grep "^JIT_AVX_LARGE:" build-jit/jit_results.txt | sed 's/JIT_AVX_LARGE://')
+
+          JA_S_10=$(echo "$JIT_AVX_SMALL" | grep -oP '10=\K[0-9.]+')
+          JA_S_100=$(echo "$JIT_AVX_SMALL" | grep -oP '100=\K[0-9.]+')
+          JA_S_1K=$(echo "$JIT_AVX_SMALL" | grep -oP '1000=\K[0-9.]+')
+          JA_S_10K=$(echo "$JIT_AVX_SMALL" | grep -oP '10000=\K[0-9.]+')
+          JA_S_100K=$(echo "$JIT_AVX_SMALL" | grep -oP '100000=\K[0-9.]+')
+          JA_S_400K=$(echo "$JIT_AVX_SMALL" | grep -oP '400000=\K[0-9.]+')
+
+          JA_L_10=$(echo "$JIT_AVX_LARGE" | grep -oP '10=\K[0-9.]+')
+          JA_L_100=$(echo "$JIT_AVX_LARGE" | grep -oP '100=\K[0-9.]+')
+          JA_L_1K=$(echo "$JIT_AVX_LARGE" | grep -oP '1000=\K[0-9.]+')
+          JA_L_10K=$(echo "$JIT_AVX_LARGE" | grep -oP '10000=\K[0-9.]+')
+          JA_L_100K=$(echo "$JIT_AVX_LARGE" | grep -oP '100000=\K[0-9.]+')
+          JA_L_400K=$(echo "$JIT_AVX_LARGE" | grep -oP '400000=\K[0-9.]+')
 
           echo "================================================================================"
-          echo "  TYPE OVERHEAD COMPARISON: double vs xad::AReal<double> vs Forge JIT"
+          echo "  TYPE OVERHEAD COMPARISON: double vs AReal vs JIT-Scalar vs JIT-AVX2"
           echo "================================================================================"
           echo ""
           echo "This compares pricing-only performance (no derivatives) to measure"
           echo "the overhead of using xad::AReal<double> and Forge JIT instead of plain double."
           echo "All benchmarks ran on the same hardware in this job."
           echo ""
+          echo "JIT-Scalar: Forge JIT with scalar x64 code generation"
+          echo "JIT-AVX2:   Forge JIT with AVX2 vectorization (4-path batching)"
+          echo ""
           echo "================================================================================"
           echo "  SMALL SWAPTION (1Y into 1Y)"
           echo "================================================================================"
           echo ""
-          printf "| %6s | %12s | %12s | %12s | %12s | %12s |\n" "Paths" "double (ms)" "AReal (ms)" "JIT (ms)" "AReal OH" "JIT OH"
-          printf "|%s|%s|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-------------:" "-------------:" "-------------:"
+          printf "| %6s | %10s | %10s | %10s | %10s | %9s | %9s | %9s |\n" "Paths" "double" "AReal" "JIT-Scalar" "JIT-AVX2" "AReal OH" "Scalar OH" "AVX2 OH"
+          printf "|%s|%s|%s|%s|%s|%s|%s|%s|\n" "-------:" "-----------:" "-----------:" "-----------:" "-----------:" "----------:" "----------:" "----------:"
 
-          for paths in "10 $D_S_10 $A_S_10 $J_S_10" "100 $D_S_100 $A_S_100 $J_S_100" "1K $D_S_1K $A_S_1K $J_S_1K" "10K $D_S_10K $A_S_10K $J_S_10K" "100K $D_S_100K $A_S_100K $J_S_100K"; do
+          for paths in "10 $D_S_10 $A_S_10 $JS_S_10 $JA_S_10" "100 $D_S_100 $A_S_100 $JS_S_100 $JA_S_100" "1K $D_S_1K $A_S_1K $JS_S_1K $JA_S_1K" "10K $D_S_10K $A_S_10K $JS_S_10K $JA_S_10K" "100K $D_S_100K $A_S_100K $JS_S_100K $JA_S_100K" "400K $D_S_400K $A_S_400K $JS_S_400K $JA_S_400K"; do
             set -- $paths
-            p=$1; d=$2; a=$3; j=$4
-            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$j" ] && [ "$d" != "0" ]; then
+            p=$1; d=$2; a=$3; js=$4; ja=$5
+            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$js" ] && [ -n "$ja" ] && [ "$d" != "0" ]; then
               areal_oh=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
-              jit_oh=$(awk "BEGIN {printf \"%.1f\", (($j - $d) / $d) * 100}")
-              printf "| %6s | %12.2f | %12.2f | %12.2f | %10s%% | %10s%% |\n" "$p" "$d" "$a" "$j" "$areal_oh" "$jit_oh"
+              scalar_oh=$(awk "BEGIN {printf \"%.1f\", (($js - $d) / $d) * 100}")
+              avx_oh=$(awk "BEGIN {printf \"%.1f\", (($ja - $d) / $d) * 100}")
+              printf "| %6s | %10.1f | %10.1f | %10.1f | %10.1f | %8s%% | %8s%% | %8s%% |\n" "$p" "$d" "$a" "$js" "$ja" "$areal_oh" "$scalar_oh" "$avx_oh"
             fi
           done
 
@@ -1576,16 +1704,17 @@ jobs:
           echo "  LARGE SWAPTION (5Y into 5Y)"
           echo "================================================================================"
           echo ""
-          printf "| %6s | %12s | %12s | %12s | %12s | %12s |\n" "Paths" "double (ms)" "AReal (ms)" "JIT (ms)" "AReal OH" "JIT OH"
-          printf "|%s|%s|%s|%s|%s|%s|\n" "-------:" "-------------:" "-------------:" "-------------:" "-------------:" "-------------:"
+          printf "| %6s | %10s | %10s | %10s | %10s | %9s | %9s | %9s |\n" "Paths" "double" "AReal" "JIT-Scalar" "JIT-AVX2" "AReal OH" "Scalar OH" "AVX2 OH"
+          printf "|%s|%s|%s|%s|%s|%s|%s|%s|\n" "-------:" "-----------:" "-----------:" "-----------:" "-----------:" "----------:" "----------:" "----------:"
 
-          for paths in "10 $D_L_10 $A_L_10 $J_L_10" "100 $D_L_100 $A_L_100 $J_L_100" "1K $D_L_1K $A_L_1K $J_L_1K" "10K $D_L_10K $A_L_10K $J_L_10K" "100K $D_L_100K $A_L_100K $J_L_100K"; do
+          for paths in "10 $D_L_10 $A_L_10 $JS_L_10 $JA_L_10" "100 $D_L_100 $A_L_100 $JS_L_100 $JA_L_100" "1K $D_L_1K $A_L_1K $JS_L_1K $JA_L_1K" "10K $D_L_10K $A_L_10K $JS_L_10K $JA_L_10K" "100K $D_L_100K $A_L_100K $JS_L_100K $JA_L_100K" "400K $D_L_400K $A_L_400K $JS_L_400K $JA_L_400K"; do
             set -- $paths
-            p=$1; d=$2; a=$3; j=$4
-            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$j" ] && [ "$d" != "0" ]; then
+            p=$1; d=$2; a=$3; js=$4; ja=$5
+            if [ -n "$d" ] && [ -n "$a" ] && [ -n "$js" ] && [ -n "$ja" ] && [ "$d" != "0" ]; then
               areal_oh=$(awk "BEGIN {printf \"%.1f\", (($a - $d) / $d) * 100}")
-              jit_oh=$(awk "BEGIN {printf \"%.1f\", (($j - $d) / $d) * 100}")
-              printf "| %6s | %12.2f | %12.2f | %12.2f | %10s%% | %10s%% |\n" "$p" "$d" "$a" "$j" "$areal_oh" "$jit_oh"
+              scalar_oh=$(awk "BEGIN {printf \"%.1f\", (($js - $d) / $d) * 100}")
+              avx_oh=$(awk "BEGIN {printf \"%.1f\", (($ja - $d) / $d) * 100}")
+              printf "| %6s | %10.1f | %10.1f | %10.1f | %10.1f | %8s%% | %8s%% | %8s%% |\n" "$p" "$d" "$a" "$js" "$ja" "$areal_oh" "$scalar_oh" "$avx_oh"
             fi
           done
 
@@ -1595,8 +1724,9 @@ jobs:
           echo "================================================================================"
           echo ""
           echo "Overhead (OH) represents the cost relative to plain double:"
-          echo "  - AReal OH: Cost of using xad::AReal<double> in passive mode (no tape recording)"
-          echo "  - JIT OH: Cost of Forge JIT (graph recording + compilation + forward execution)"
+          echo "  - AReal OH:    Cost of using xad::AReal<double> in passive mode (no tape recording)"
+          echo "  - Scalar OH:   Cost of Forge JIT scalar (graph recording + compilation + forward)"
+          echo "  - AVX2 OH:     Cost of Forge JIT AVX2 with 4-path batching"
           echo ""
           echo "Note: JIT timing includes kernel compilation, which is a fixed cost that"
           echo "      amortizes over more paths. This matches the AD benchmark methodology."
@@ -1744,8 +1874,8 @@ jobs:
                   accrualEnd[k] = process->accrualEndTimes()[k];
               }
 
-              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000};
-              Size maxPaths = 100000;
+              std::vector<int> pathCounts = {10, 100, 1000, 10000, 100000, 400000};
+              Size maxPaths = 400000;
 
               std::cerr << "  Generating randoms..." << std::flush;
               typedef PseudoRandom::rsg_type rsg_type;
