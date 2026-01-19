@@ -123,7 +123,7 @@ Real priceMulticurveBootstrappingSwap(const std::vector<Real>& depos,
         auto endDate = q.first.second;
         auto quote = q.second;
         auto helper =
-            ext::make_shared<DatedOISRateHelper>(startDate, endDate, Handle<Quote>(quote), eonia);
+            ext::make_shared<OISRateHelper>(startDate, endDate, Handle<Quote>(quote), eonia);
         eoniaInstruments.push_back(helper);
     }
 
