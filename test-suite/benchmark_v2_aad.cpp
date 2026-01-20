@@ -296,7 +296,7 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         for (Size k = 0; k < numIntermediates; ++k)
             intermediateValues[k] = value(intermediates[k]);
 
-        using JITBackend = xad::ForgeBackend<double>;
+        using JITBackend = xad::forge::ForgeBackend<double>;
         JITBackend backend;
 
         std::vector<double> initRatesD(config.size);

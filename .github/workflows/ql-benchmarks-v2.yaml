@@ -130,55 +130,8 @@ jobs:
           cmake --install build
 
       # =========================================================================
-      # Build 1: Plain double QuantLib (for FD benchmark)
-      # =========================================================================
-      - name: Configure QuantLib (plain double)
-        run: |
-          cd QuantLib
-          cmake -B build-double -G Ninja -DBOOST_ROOT=/usr \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DQL_BUILD_TEST_SUITE=OFF \
-            -DQL_BUILD_EXAMPLES=OFF \
-            -DQL_BUILD_BENCHMARK=OFF \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../QuantLib-Risks-Cpp" \
-            -DQLRISKS_DISABLE_AAD=ON \
-            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
-
-      - name: Build FD benchmark (plain double)
-        run: |
-          cd QuantLib/build-double
-          cmake --build . --target benchmark_fd_v2
-
-      # =========================================================================
-      # Build 2: XAD (JIT disabled) for XAD tape AAD
-      # =========================================================================
-      - name: Configure QuantLib (XAD, JIT off)
-        run: |
-          cd QuantLib
-          cmake -B build-xad -G Ninja -DBOOST_ROOT=/usr \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DXAD_WARNINGS_PARANOID=OFF \
-            -DXAD_ENABLE_JIT=OFF \
-            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp" \
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
-            -DQL_NULL_AS_FUNCTIONS=ON \
-            -DQL_BUILD_TEST_SUITE=OFF \
-            -DQL_BUILD_EXAMPLES=OFF \
-            -DQL_BUILD_BENCHMARK=OFF \
-            -DQLRISKS_DISABLE_AAD=OFF \
-            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
-
-      - name: Build XAD benchmark (JIT off)
-        run: |
-          cd QuantLib/build-xad
-          cmake --build . --target benchmark_aad_v2
-
-      # =========================================================================
-      # Build 3: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # Build 1: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # Build this first to catch compile errors early
       # =========================================================================
       - name: Configure QuantLib (XAD + Forge)
         run: |
@@ -205,6 +158,54 @@ jobs:
       - name: Build Forge benchmark (JIT on)
         run: |
           cd QuantLib/build-forge
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Build 2: Plain double QuantLib (for FD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (plain double)
+        run: |
+          cd QuantLib
+          cmake -B build-double -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQLRISKS_DISABLE_AAD=ON \
+            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
+
+      - name: Build FD benchmark (plain double)
+        run: |
+          cd QuantLib/build-double
+          cmake --build . --target benchmark_fd_v2
+
+      # =========================================================================
+      # Build 3: XAD (JIT disabled) for XAD tape AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD, JIT off)
+        run: |
+          cd QuantLib
+          cmake -B build-xad -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build XAD benchmark (JIT off)
+        run: |
+          cd QuantLib/build-xad
           cmake --build . --target benchmark_aad_v2
 
       # =========================================================================
@@ -332,62 +333,8 @@ jobs:
           cmake --install build
 
       # =========================================================================
-      # Build 1: Plain double QuantLib (for FD benchmark)
-      # =========================================================================
-      - name: Configure QuantLib (plain double)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib
-          cmake -B build-double -G Ninja ^
-            -DCMAKE_CXX_STANDARD=17 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DQL_BUILD_TEST_SUITE=OFF ^
-            -DQL_BUILD_EXAMPLES=OFF ^
-            -DQL_BUILD_BENCHMARK=OFF ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
-            -DQLRISKS_DISABLE_AAD=ON ^
-            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
-
-      - name: Build FD benchmark (plain double)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib\build-double
-          cmake --build . --target benchmark_fd_v2
-
-      # =========================================================================
-      # Build 2: XAD (JIT disabled) for XAD tape AAD
-      # =========================================================================
-      - name: Configure QuantLib (XAD, JIT off)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib
-          cmake -B build-xad -G Ninja ^
-            -DCMAKE_CXX_STANDARD=17 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DXAD_WARNINGS_PARANOID=OFF ^
-            -DXAD_ENABLE_JIT=OFF ^
-            -DXAD_STATIC_MSVC_RUNTIME=ON ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\QuantLib-Risks-Cpp" ^
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
-            -DQL_NULL_AS_FUNCTIONS=ON ^
-            -DQL_BUILD_TEST_SUITE=OFF ^
-            -DQL_BUILD_EXAMPLES=OFF ^
-            -DQL_BUILD_BENCHMARK=OFF ^
-            -DQLRISKS_DISABLE_AAD=OFF ^
-            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
-
-      - name: Build XAD benchmark (JIT off)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib\build-xad
-          cmake --build . --target benchmark_aad_v2
-
-      # =========================================================================
-      # Build 3: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # Build 1: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # Build this first to catch compile errors early
       # =========================================================================
       - name: Configure QuantLib (XAD + Forge)
         shell: cmd
@@ -418,6 +365,61 @@ jobs:
         run: |
           call "%VSVARSALL%" x64
           cd QuantLib\build-forge
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Build 2: Plain double QuantLib (for FD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-double -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQLRISKS_DISABLE_AAD=ON ^
+            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
+
+      - name: Build FD benchmark (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-double
+          cmake --build . --target benchmark_fd_v2
+
+      # =========================================================================
+      # Build 3: XAD (JIT disabled) for XAD tape AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD, JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-xad -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=OFF ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build XAD benchmark (JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-xad
           cmake --build . --target benchmark_aad_v2
 
       # =========================================================================
