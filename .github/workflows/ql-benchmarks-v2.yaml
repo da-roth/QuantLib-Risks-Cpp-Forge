@@ -130,8 +130,7 @@ jobs:
           cmake --install build
 
       # =========================================================================
-      # Build 1: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
-      # Build this first to catch compile errors early
+      # Benchmark 1: XAD + Forge (JIT enabled) - build and run first
       # =========================================================================
       - name: Configure QuantLib (XAD + Forge)
         run: |
@@ -160,8 +159,15 @@ jobs:
           cd QuantLib/build-forge
           cmake --build . --target benchmark_aad_v2
 
+      - name: Run Forge Benchmark (JIT on)
+        run: |
+          echo "===== FORGE BENCHMARK (XAD + Forge JIT) ====="
+          cd QuantLib/build-forge
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-aad-v2 --all 2>&1 | tee forge_results.txt
+
       # =========================================================================
-      # Build 2: Plain double QuantLib (for FD benchmark)
+      # Benchmark 2: Plain double QuantLib (for FD benchmark)
       # =========================================================================
       - name: Configure QuantLib (plain double)
         run: |
@@ -182,8 +188,14 @@ jobs:
           cd QuantLib/build-double
           cmake --build . --target benchmark_fd_v2
 
+      - name: Run FD Benchmark (plain double)
+        run: |
+          echo "===== FD BENCHMARK (plain double QuantLib) ====="
+          cd QuantLib/build-double
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-fd-v2 --all 2>&1 | tee fd_results.txt
+
       # =========================================================================
-      # Build 3: XAD (JIT disabled) for XAD tape AAD
+      # Benchmark 3: XAD (JIT disabled) for XAD tape AAD
       # =========================================================================
       - name: Configure QuantLib (XAD, JIT off)
         run: |
@@ -208,27 +220,11 @@ jobs:
           cd QuantLib/build-xad
           cmake --build . --target benchmark_aad_v2
 
-      # =========================================================================
-      # Run all benchmarks on same hardware
-      # =========================================================================
-      - name: Run FD Benchmark (plain double)
-        run: |
-          echo "===== FD BENCHMARK (plain double QuantLib) ====="
-          cd QuantLib/build-double
-          ./QuantLib-Risks-Cpp/test-suite/benchmark-fd-v2 --all 2>&1 | tee fd_results.txt
-
       - name: Run XAD Benchmark (JIT off)
         run: |
           echo "===== XAD BENCHMARK (XAD tape, JIT disabled) ====="
           cd QuantLib/build-xad
           ./QuantLib-Risks-Cpp/test-suite/benchmark-aad-v2 --all --xad-only 2>&1 | tee xad_results.txt
-
-      - name: Run Forge Benchmark (JIT on)
-        run: |
-          echo "===== FORGE BENCHMARK (XAD + Forge JIT) ====="
-          cd QuantLib/build-forge
-          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/benchmark-aad-v2 --all 2>&1 | tee forge_results.txt
 
       # =========================================================================
       # Combine and display results
@@ -333,8 +329,7 @@ jobs:
           cmake --install build
 
       # =========================================================================
-      # Build 1: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
-      # Build this first to catch compile errors early
+      # Benchmark 1: XAD + Forge (JIT enabled) - build and run first
       # =========================================================================
       - name: Configure QuantLib (XAD + Forge)
         shell: cmd
@@ -367,8 +362,17 @@ jobs:
           cd QuantLib\build-forge
           cmake --build . --target benchmark_aad_v2
 
+      - name: Run Forge Benchmark (JIT on)
+        shell: cmd
+        run: |
+          echo ===== FORGE BENCHMARK (XAD + Forge JIT) =====
+          cd QuantLib\build-forge
+          set PATH=%CD%\..\..\install\bin;%PATH%
+          QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all > forge_results.txt 2>&1
+          type forge_results.txt
+
       # =========================================================================
-      # Build 2: Plain double QuantLib (for FD benchmark)
+      # Benchmark 2: Plain double QuantLib (for FD benchmark)
       # =========================================================================
       - name: Configure QuantLib (plain double)
         shell: cmd
@@ -392,8 +396,16 @@ jobs:
           cd QuantLib\build-double
           cmake --build . --target benchmark_fd_v2
 
+      - name: Run FD Benchmark (plain double)
+        shell: cmd
+        run: |
+          echo ===== FD BENCHMARK (plain double QuantLib) =====
+          cd QuantLib\build-double
+          QuantLib-Risks-Cpp\test-suite\benchmark-fd-v2.exe --all > fd_results.txt 2>&1
+          type fd_results.txt
+
       # =========================================================================
-      # Build 3: XAD (JIT disabled) for XAD tape AAD
+      # Benchmark 3: XAD (JIT disabled) for XAD tape AAD
       # =========================================================================
       - name: Configure QuantLib (XAD, JIT off)
         shell: cmd
@@ -422,17 +434,6 @@ jobs:
           cd QuantLib\build-xad
           cmake --build . --target benchmark_aad_v2
 
-      # =========================================================================
-      # Run all benchmarks on same hardware
-      # =========================================================================
-      - name: Run FD Benchmark (plain double)
-        shell: cmd
-        run: |
-          echo ===== FD BENCHMARK (plain double QuantLib) =====
-          cd QuantLib\build-double
-          QuantLib-Risks-Cpp\test-suite\benchmark-fd-v2.exe --all > fd_results.txt 2>&1
-          type fd_results.txt
-
       - name: Run XAD Benchmark (JIT off)
         shell: cmd
         run: |
@@ -440,15 +441,6 @@ jobs:
           cd QuantLib\build-xad
           QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all --xad-only > xad_results.txt 2>&1
           type xad_results.txt
-
-      - name: Run Forge Benchmark (JIT on)
-        shell: cmd
-        run: |
-          echo ===== FORGE BENCHMARK (XAD + Forge JIT) =====
-          cd QuantLib\build-forge
-          set PATH=%CD%\..\..\install\bin;%PATH%
-          QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all > forge_results.txt 2>&1
-          type forge_results.txt
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
