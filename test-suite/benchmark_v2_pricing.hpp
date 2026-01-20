@@ -376,7 +376,7 @@ RealType priceSwaptionDualCurve(const BenchmarkConfig& config,
     {
         auto oisDepoQuote = ext::make_shared<SimpleQuote>(oisDepoRates[idx]);
         discountingInstruments.push_back(ext::make_shared<DepositRateHelper>(
-            Handle<Quote>(oisDepoQuote), config.oisDepoTenors[idx], 0,
+            Handle<Quote>(oisDepoQuote), config.oisDepoTenors[idx], setup.fixingDays,
             setup.calendar, ModifiedFollowing, true, Actual360()));
     }
     for (Size idx = 0; idx < config.numOisSwaps; ++idx)
