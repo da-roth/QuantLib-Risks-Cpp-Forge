@@ -24,21 +24,23 @@
 #
 ##############################################################################
 
-name: QL Benchmarks
+name: QL Benchmarks (v1 - disabled)
 
+# NOTE: Automatic triggers disabled while testing v2 benchmarks
+# To re-enable, uncomment the push/pull_request sections below
 on:
-  push:
-    paths:
-      - 'test-suite/swaption_benchmark*.cpp'
-      - 'test-suite/benchmark_main.cpp'
-      - 'test-suite/benchmark_utils.hpp'
-      - '.github/workflows/ql-benchmarks.yaml'
-  pull_request:
-    paths:
-      - 'test-suite/swaption_benchmark*.cpp'
-      - 'test-suite/benchmark_main.cpp'
-      - 'test-suite/benchmark_utils.hpp'
-      - '.github/workflows/ql-benchmarks.yaml'
+  # push:
+  #   paths:
+  #     - 'test-suite/swaption_benchmark*.cpp'
+  #     - 'test-suite/benchmark_main.cpp'
+  #     - 'test-suite/benchmark_utils.hpp'
+  #     - '.github/workflows/ql-benchmarks.yaml'
+  # pull_request:
+  #   paths:
+  #     - 'test-suite/swaption_benchmark*.cpp'
+  #     - 'test-suite/benchmark_main.cpp'
+  #     - 'test-suite/benchmark_utils.hpp'
+  #     - '.github/workflows/ql-benchmarks.yaml'
   workflow_dispatch:
     inputs:
       ql_repo:

@@ -19,11 +19,13 @@
 #
 ##############################################################################
 
-name: CI
+name: CI (disabled)
 
+# NOTE: Automatic triggers disabled while testing v2 benchmarks
+# To re-enable, uncomment the push/pull_request lines below
 on:
-  push:
-  pull_request:
+  # push:
+  # pull_request:
   workflow_dispatch:
     inputs:
       ql_repo:
