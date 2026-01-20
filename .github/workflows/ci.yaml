@@ -393,7 +393,7 @@ jobs:
           ./AdjointSwapXAD
 
   ##############################################################################
-  # Linux - Original XAD with QL_USE_STD_CLASSES (mirrors QuantLib-Risks-Cpp)
+  # Linux - XAD with QL_USE_STD_CLASSES
   ##############################################################################
   xad-linux-std-classes:
     runs-on: ubuntu-latest
