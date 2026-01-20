@@ -215,20 +215,20 @@ jobs:
         run: |
           echo "===== FD BENCHMARK (plain double QuantLib) ====="
           cd QuantLib/build-double
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_fd_v2 --all 2>&1 | tee fd_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-fd-v2 --all 2>&1 | tee fd_results.txt
 
       - name: Run XAD Benchmark (JIT off)
         run: |
           echo "===== XAD BENCHMARK (XAD tape, JIT disabled) ====="
           cd QuantLib/build-xad
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --all --xad-only 2>&1 | tee xad_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-aad-v2 --all --xad-only 2>&1 | tee xad_results.txt
 
       - name: Run Forge Benchmark (JIT on)
         run: |
           echo "===== FORGE BENCHMARK (XAD + Forge JIT) ====="
           cd QuantLib/build-forge
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --all 2>&1 | tee forge_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-aad-v2 --all 2>&1 | tee forge_results.txt
 
       # =========================================================================
       # Combine and display results
@@ -430,7 +430,7 @@ jobs:
         run: |
           echo ===== FD BENCHMARK (plain double QuantLib) =====
           cd QuantLib\build-double
-          QuantLib-Risks-Cpp\test-suite\benchmark_fd_v2.exe --all > fd_results.txt 2>&1
+          QuantLib-Risks-Cpp\test-suite\benchmark-fd-v2.exe --all > fd_results.txt 2>&1
           type fd_results.txt
 
       - name: Run XAD Benchmark (JIT off)
@@ -438,7 +438,7 @@ jobs:
         run: |
           echo ===== XAD BENCHMARK (XAD tape, JIT disabled) =====
           cd QuantLib\build-xad
-          QuantLib-Risks-Cpp\test-suite\benchmark_aad_v2.exe --all --xad-only > xad_results.txt 2>&1
+          QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all --xad-only > xad_results.txt 2>&1
           type xad_results.txt
 
       - name: Run Forge Benchmark (JIT on)
@@ -447,7 +447,7 @@ jobs:
           echo ===== FORGE BENCHMARK (XAD + Forge JIT) =====
           cd QuantLib\build-forge
           set PATH=%CD%\..\..\install\bin;%PATH%
-          QuantLib-Risks-Cpp\test-suite\benchmark_aad_v2.exe --all > forge_results.txt 2>&1
+          QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all > forge_results.txt 2>&1
           type forge_results.txt
 
       - name: Upload Results
