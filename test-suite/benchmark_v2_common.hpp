@@ -156,10 +156,11 @@ struct BenchmarkConfig
                      0.0505, 0.0518, 0.0528, 0.0536, 0.0542,
                      0.0550, 0.0558, 0.0562, 0.0560, 0.0555};
 
-        // Discounting curve: OIS deposits + swaps (26 quotes)
-        numOisDeposits = 6;
-        oisDepoTenors = {1 * Days, 1 * Weeks, 1 * Months, 2 * Months, 3 * Months, 6 * Months};
-        oisDepoRates = {0.0300, 0.0305, 0.0312, 0.0320, 0.0328, 0.0345};
+        // Discounting curve: OIS deposits + swaps (24 quotes)
+        // Note: OIS deposits must have tenors > settlement days (2) to be "alive"
+        numOisDeposits = 4;
+        oisDepoTenors = {1 * Months, 2 * Months, 3 * Months, 6 * Months};
+        oisDepoRates = {0.0312, 0.0320, 0.0328, 0.0345};
 
         numOisSwaps = 20;
         oisSwapTenors = {1 * Years, 2 * Years, 3 * Years, 4 * Years, 5 * Years,
@@ -171,7 +172,7 @@ struct BenchmarkConfig
                         0.0517, 0.0520, 0.0523, 0.0525, 0.0526,
                         0.0527, 0.0526, 0.0522, 0.0515, 0.0500};
 
-        // Total: 21 + 26 = 47 sensitivities
+        // Total: 21 + 24 = 45 sensitivities
 
         // LMM parameters for 5Y into 5Y swaption
         size = 20;
