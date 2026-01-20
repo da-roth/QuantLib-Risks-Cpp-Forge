@@ -176,7 +176,7 @@ jobs:
           ./AdjointSwapXAD
 
   ##############################################################################
-  # Windows - Original XAD (mirrors QuantLib-Risks-Cpp)
+  # Windows - XAD
   ##############################################################################
   xad-win:
     strategy:
