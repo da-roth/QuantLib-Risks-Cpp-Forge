@@ -6,7 +6,7 @@
  *  This executable is compiled WITH XAD (and optionally Forge).
  *
  *  Usage:
- *    ./benchmark_aad_v2 [--small|--large|--both] [--quick] [--xad-only]
+ *    ./benchmark_aad_v2 [--lite|--lite-extended|--production|--all] [--quick] [--xad-only]
  *
  *  Output format is designed to be parsed and combined with FD results.
  *
@@ -39,7 +39,7 @@ using RealAD = QuantLib::Real;
 using tape_type = RealAD::tape_type;
 
 // ============================================================================
-// XAD Tape-based AAD Benchmark
+// XAD Tape-based AAD Benchmark (Single-Curve)
 // ============================================================================
 
 void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
@@ -88,6 +88,67 @@ void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
     stddev = computeStddev(times);
 }
 
+// ============================================================================
+// XAD Tape-based AAD Benchmark (Dual-Curve / Production)
+// ============================================================================
+
+void runXADBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
+                               Size nrTrails, size_t warmup, size_t bench,
+                               double& mean, double& stddev)
+{
+    std::vector<double> times;
+
+    for (size_t iter = 0; iter < warmup + bench; ++iter)
+    {
+        auto t_start = Clock::now();
+
+        tape_type tape;
+
+        // Register forecasting curve inputs
+        std::vector<RealAD> depositRates(config.numDeposits);
+        std::vector<RealAD> swapRatesAD(config.numSwaps);
+        for (Size idx = 0; idx < config.numDeposits; ++idx)
+            depositRates[idx] = config.depoRates[idx];
+        for (Size idx = 0; idx < config.numSwaps; ++idx)
+            swapRatesAD[idx] = config.swapRates[idx];
+
+        // Register discounting curve inputs (OIS)
+        std::vector<RealAD> oisDepoRates(config.numOisDeposits);
+        std::vector<RealAD> oisSwapRatesAD(config.numOisSwaps);
+        for (Size idx = 0; idx < config.numOisDeposits; ++idx)
+            oisDepoRates[idx] = config.oisDepoRates[idx];
+        for (Size idx = 0; idx < config.numOisSwaps; ++idx)
+            oisSwapRatesAD[idx] = config.oisSwapRates[idx];
+
+        tape.registerInputs(depositRates);
+        tape.registerInputs(swapRatesAD);
+        tape.registerInputs(oisDepoRates);
+        tape.registerInputs(oisSwapRatesAD);
+        tape.newRecording();
+
+        // Price using dual-curve function
+        RealAD price = priceSwaptionDualCurve<RealAD>(
+            config, setup, depositRates, swapRatesAD, oisDepoRates, oisSwapRatesAD, nrTrails);
+
+        // Compute adjoints
+        tape.registerOutput(price);
+        derivative(price) = 1.0;
+        tape.computeAdjoints();
+
+        auto t_end = Clock::now();
+
+        if (iter >= warmup)
+        {
+            times.push_back(DurationMs(t_end - t_start).count());
+        }
+
+        tape.clearAll();
+    }
+
+    mean = computeMean(times);
+    stddev = computeStddev(times);
+}
+
 #if defined(QLRISKS_HAS_FORGE)
 
 // ============================================================================
@@ -115,7 +176,7 @@ inline void applyChainRule(const double* __restrict jacobian,
 }
 
 // ============================================================================
-// Forge JIT Scalar Benchmark
+// Forge JIT Scalar Benchmark (Single-Curve)
 // ============================================================================
 
 void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
@@ -125,7 +186,7 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
     std::vector<double> times;
 
     Size numMarketQuotes = config.numMarketQuotes();
-    Size numIntermediates = config.size + 1;  // forward rates + 1
+    Size numIntermediates = config.size + 1;  // forward rates + swap rate
 
     for (size_t iter = 0; iter < warmup + bench; ++iter)
     {
@@ -281,6 +342,7 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         }
 
         (void)finalDerivatives;
+        (void)swapRateD;
     }
 
     mean = computeMean(times);
@@ -304,7 +366,7 @@ void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 #endif // QLRISKS_HAS_FORGE
 
 // ============================================================================
-// Main AAD Benchmark Runner
+// Main AAD Benchmark Runner (Single-Curve)
 // ============================================================================
 
 std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
@@ -368,14 +430,71 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 }
 
 // ============================================================================
+// Main AAD Benchmark Runner (Dual-Curve / Production)
+// ============================================================================
+
+std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config,
+                                                    bool quickMode, bool xadOnly)
+{
+    std::vector<TimingResult> results;
+
+    // Setup LMM
+    LMMSetup setup(config);
+
+    std::cout << "================================================================================\n";
+    std::cout << "  RUNNING AAD BENCHMARKS (Dual-Curve)\n";
+    std::cout << "================================================================================\n";
+    std::cout << "\n";
+
+    for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
+    {
+        int paths = config.pathCounts[tc];
+        Size nrTrails = static_cast<Size>(paths);
+
+        TimingResult result;
+        result.pathCount = paths;
+
+        std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
+                  << formatPathCount(paths) << " paths (" << config.numMarketQuotes()
+                  << " sensitivities) " << std::flush;
+
+        size_t warmup = quickMode ? 1 : config.warmupIterations;
+        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+
+        // XAD tape (dual-curve)
+        runXADBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
+                                  result.xad_mean, result.xad_std);
+        result.xad_enabled = true;
+        std::cout << "XAD=" << std::fixed << std::setprecision(1) << result.xad_mean << "ms ";
+
+#if defined(QLRISKS_HAS_FORGE)
+        if (!xadOnly)
+        {
+            // Note: JIT for dual-curve would require additional implementation
+            // For now, we only run XAD tape for production config
+            std::cout << "(JIT not yet implemented for dual-curve)";
+        }
+#else
+        (void)xadOnly;
+#endif
+
+        std::cout << "\n";
+        results.push_back(result);
+    }
+
+    std::cout << "\n";
+    return results;
+}
+
+// ============================================================================
 // Output Results in Machine-Parseable Format
 // ============================================================================
 
 void outputResultsForParsing(const std::vector<TimingResult>& results,
-                              const std::string& benchmarkName)
+                              const std::string& configId)
 {
     // XAD results
-    std::cout << "XAD_" << benchmarkName << ":";
+    std::cout << "XAD_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
@@ -387,7 +506,7 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
 
 #if defined(QLRISKS_HAS_FORGE)
     // JIT results
-    std::cout << "JIT_" << benchmarkName << ":";
+    std::cout << "JIT_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
@@ -398,7 +517,7 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
     std::cout << std::endl;
 
     // JIT-AVX results
-    std::cout << "JITAVX_" << benchmarkName << ":";
+    std::cout << "JITAVX_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
@@ -416,28 +535,37 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
 
 int main(int argc, char* argv[])
 {
-    bool runSmall = true;
-    bool runLarge = true;
+    bool runLite = false;
+    bool runLiteExtended = false;
+    bool runProduction = false;
+    bool runAll = true;  // Default: run lite and lite-extended (not production)
     bool quickMode = false;
     bool xadOnly = false;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i)
     {
-        if (strcmp(argv[i], "--small") == 0)
+        if (strcmp(argv[i], "--lite") == 0)
         {
-            runSmall = true;
-            runLarge = false;
+            runLite = true;
+            runAll = false;
         }
-        else if (strcmp(argv[i], "--large") == 0)
+        else if (strcmp(argv[i], "--lite-extended") == 0)
         {
-            runSmall = false;
-            runLarge = true;
+            runLiteExtended = true;
+            runAll = false;
         }
-        else if (strcmp(argv[i], "--both") == 0)
+        else if (strcmp(argv[i], "--production") == 0)
         {
-            runSmall = true;
-            runLarge = true;
+            runProduction = true;
+            runAll = false;
+        }
+        else if (strcmp(argv[i], "--all") == 0)
+        {
+            runLite = true;
+            runLiteExtended = true;
+            runProduction = true;
+            runAll = false;
         }
         else if (strcmp(argv[i], "--quick") == 0)
         {
@@ -451,40 +579,68 @@ int main(int argc, char* argv[])
         {
             std::cout << "Usage: " << argv[0] << " [options]\n";
             std::cout << "Options:\n";
-            std::cout << "  --small     Run only small swaption (1Y into 1Y)\n";
-            std::cout << "  --large     Run only large swaption (5Y into 5Y)\n";
-            std::cout << "  --both      Run both benchmarks (default)\n";
-            std::cout << "  --quick     Quick mode (fewer iterations)\n";
-            std::cout << "  --xad-only  Run only XAD tape (no JIT)\n";
-            std::cout << "  --help      Show this message\n";
+            std::cout << "  --lite           Run lite benchmark (1Y into 1Y, 9 sensitivities)\n";
+            std::cout << "  --lite-extended  Run lite-extended benchmark (5Y into 5Y, 14 sensitivities)\n";
+            std::cout << "  --production     Run production benchmark (5Y into 5Y dual-curve, 47 sensitivities)\n";
+            std::cout << "  --all            Run all benchmarks including production\n";
+            std::cout << "  --quick          Quick mode (fewer iterations)\n";
+            std::cout << "  --xad-only       Run only XAD tape (no JIT)\n";
+            std::cout << "  --help           Show this message\n";
+            std::cout << "\n";
+            std::cout << "Default: runs lite and lite-extended (not production)\n";
             return 0;
         }
+    }
+
+    // Default behavior: run lite and lite-extended
+    if (runAll)
+    {
+        runLite = true;
+        runLiteExtended = true;
+        runProduction = false;  // Production opt-in only
     }
 
     printHeader();
     printEnvironment();
 
-    if (runSmall)
-    {
-        BenchmarkConfig smallConfig;
-        printBenchmarkHeader(smallConfig, 1);
+    int benchmarkNum = 1;
 
-        auto results = runAADBenchmark(smallConfig, quickMode, xadOnly);
-        outputResultsForParsing(results, "SMALL");
+    if (runLite)
+    {
+        BenchmarkConfig liteConfig;
+        printBenchmarkHeader(liteConfig, benchmarkNum++);
+
+        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly);
+        printResultsTable(results);
+        printResultsFooter(liteConfig);
+        outputResultsForParsing(results, liteConfig.configId);
     }
 
-    if (runLarge)
+    if (runLiteExtended)
     {
-        BenchmarkConfig largeConfig;
-        largeConfig.setLargeConfig();
-        printBenchmarkHeader(largeConfig, 2);
+        BenchmarkConfig liteExtConfig;
+        liteExtConfig.setLiteExtendedConfig();
+        printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        auto results = runAADBenchmark(largeConfig, quickMode, xadOnly);
-        outputResultsForParsing(results, "LARGE");
+        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly);
+        printResultsTable(results);
+        printResultsFooter(liteExtConfig);
+        outputResultsForParsing(results, liteExtConfig.configId);
     }
 
-    std::cout << "================================================================================\n";
-    std::cout << "  AAD benchmarks complete.\n";
+    if (runProduction)
+    {
+        BenchmarkConfig prodConfig;
+        prodConfig.setProductionConfig();
+        printBenchmarkHeader(prodConfig, benchmarkNum++);
+
+        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly);
+        printResultsTable(results);
+        printResultsFooter(prodConfig);
+        outputResultsForParsing(results, prodConfig.configId);
+    }
+
+    printFooter();
 
     return 0;
 }

@@ -6,7 +6,7 @@
  *  This executable is compiled WITHOUT XAD to ensure fair FD comparison.
  *
  *  Usage:
- *    ./benchmark_fd_v2 [--small|--large|--both] [--quick]
+ *    ./benchmark_fd_v2 [--lite|--lite-extended|--production|--all] [--quick]
  *
  *  Output format is designed to be parsed and combined with AAD results.
  *
@@ -27,7 +27,7 @@ using Clock = std::chrono::high_resolution_clock;
 using DurationMs = std::chrono::duration<double, std::milli>;
 
 // ============================================================================
-// FD Benchmark Runner
+// FD Benchmark Runner (Single-Curve)
 // ============================================================================
 
 std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool quickMode)
@@ -42,6 +42,8 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
     std::cout << "================================================================================\n";
     std::cout << "\n";
 
+    const int maxFDPaths = config.getMaxFDPaths();
+
     for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
     {
         int paths = config.pathCounts[tc];
@@ -51,10 +53,10 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
         result.pathCount = paths;
 
         // Only run FD for small path counts
-        if (paths > FD_MAX_PATHS)
+        if (paths > maxFDPaths)
         {
             std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
-                      << formatPathCount(paths) << " paths - SKIPPED (paths > " << FD_MAX_PATHS << ")\n";
+                      << formatPathCount(paths) << " paths - SKIPPED (paths > " << maxFDPaths << ")\n";
             results.push_back(result);
             continue;
         }
@@ -122,14 +124,147 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
 }
 
 // ============================================================================
+// FD Benchmark Runner (Dual-Curve / Production)
+// ============================================================================
+
+std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config, bool quickMode)
+{
+    std::vector<TimingResult> results;
+
+    // Setup LMM (pre-compute grid, randoms, etc.)
+    LMMSetup setup(config);
+
+    std::cout << "================================================================================\n";
+    std::cout << "  RUNNING FD BENCHMARKS (Dual-Curve)\n";
+    std::cout << "================================================================================\n";
+    std::cout << "\n";
+
+    const int maxFDPaths = config.getMaxFDPaths();
+
+    for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
+    {
+        int paths = config.pathCounts[tc];
+        Size nrTrails = static_cast<Size>(paths);
+
+        TimingResult result;
+        result.pathCount = paths;
+
+        // Only run FD for small path counts (more restrictive for production)
+        if (paths > maxFDPaths)
+        {
+            std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
+                      << formatPathCount(paths) << " paths - SKIPPED (paths > " << maxFDPaths << ")\n";
+            results.push_back(result);
+            continue;
+        }
+
+        std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
+                  << formatPathCount(paths) << " paths (" << config.numMarketQuotes()
+                  << " sensitivities) " << std::flush;
+
+        std::vector<double> fd_times;
+        double eps = 1e-5;
+
+        size_t warmup = quickMode ? 1 : config.warmupIterations;
+        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+
+        for (size_t iter = 0; iter < warmup + bench; ++iter)
+        {
+            auto t_start = Clock::now();
+
+            // Base rates as plain double
+            std::vector<double> baseDepo(config.depoRates.begin(), config.depoRates.end());
+            std::vector<double> baseSwap(config.swapRates.begin(), config.swapRates.end());
+            std::vector<double> baseOisDepo(config.oisDepoRates.begin(), config.oisDepoRates.end());
+            std::vector<double> baseOisSwap(config.oisSwapRates.begin(), config.oisSwapRates.end());
+
+            // Compute base price using dual-curve pricing
+            double basePrice = priceSwaptionDualCurve<double>(
+                config, setup, baseDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
+
+            // Compute FD sensitivities (bump each rate)
+            std::vector<double> derivatives(config.numMarketQuotes());
+            Size q = 0;
+
+            // Bump forecasting curve deposits
+            for (Size idx = 0; idx < config.numDeposits; ++idx, ++q)
+            {
+                std::vector<double> bumpedDepo = baseDepo;
+                bumpedDepo[idx] += eps;
+
+                double bumpedPrice = priceSwaptionDualCurve<double>(
+                    config, setup, bumpedDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
+                derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            // Bump forecasting curve swaps
+            for (Size idx = 0; idx < config.numSwaps; ++idx, ++q)
+            {
+                std::vector<double> bumpedSwap = baseSwap;
+                bumpedSwap[idx] += eps;
+
+                double bumpedPrice = priceSwaptionDualCurve<double>(
+                    config, setup, baseDepo, bumpedSwap, baseOisDepo, baseOisSwap, nrTrails);
+                derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            // Bump discounting curve OIS deposits
+            for (Size idx = 0; idx < config.numOisDeposits; ++idx, ++q)
+            {
+                std::vector<double> bumpedOisDepo = baseOisDepo;
+                bumpedOisDepo[idx] += eps;
+
+                double bumpedPrice = priceSwaptionDualCurve<double>(
+                    config, setup, baseDepo, baseSwap, bumpedOisDepo, baseOisSwap, nrTrails);
+                derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            // Bump discounting curve OIS swaps
+            for (Size idx = 0; idx < config.numOisSwaps; ++idx, ++q)
+            {
+                std::vector<double> bumpedOisSwap = baseOisSwap;
+                bumpedOisSwap[idx] += eps;
+
+                double bumpedPrice = priceSwaptionDualCurve<double>(
+                    config, setup, baseDepo, baseSwap, baseOisDepo, bumpedOisSwap, nrTrails);
+                derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            auto t_end = Clock::now();
+
+            if (iter >= warmup)
+            {
+                fd_times.push_back(DurationMs(t_end - t_start).count());
+            }
+
+            // Suppress unused warnings
+            (void)basePrice;
+            (void)derivatives;
+        }
+
+        result.fd_mean = computeMean(fd_times);
+        result.fd_std = computeStddev(fd_times);
+        result.fd_enabled = true;
+
+        std::cout << "done (" << std::fixed << std::setprecision(1)
+                  << result.fd_mean << " ms)\n";
+
+        results.push_back(result);
+    }
+
+    std::cout << "\n";
+    return results;
+}
+
+// ============================================================================
 // Output Results in Machine-Parseable Format
 // ============================================================================
 
 void outputResultsForParsing(const std::vector<TimingResult>& results,
-                              const std::string& benchmarkName)
+                              const std::string& configId)
 {
-    // Output format: FD_BENCHMARK_NAME:paths=mean,std;paths=mean,std;...
-    std::cout << "FD_" << benchmarkName << ":";
+    // Output format: FD_CONFIG_ID:paths=mean,std;paths=mean,std;...
+    std::cout << "FD_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
@@ -146,27 +281,36 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
 
 int main(int argc, char* argv[])
 {
-    bool runSmall = true;
-    bool runLarge = true;
+    bool runLite = false;
+    bool runLiteExtended = false;
+    bool runProduction = false;
+    bool runAll = true;  // Default: run lite and lite-extended (not production)
     bool quickMode = false;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i)
     {
-        if (strcmp(argv[i], "--small") == 0)
+        if (strcmp(argv[i], "--lite") == 0)
         {
-            runSmall = true;
-            runLarge = false;
+            runLite = true;
+            runAll = false;
         }
-        else if (strcmp(argv[i], "--large") == 0)
+        else if (strcmp(argv[i], "--lite-extended") == 0)
         {
-            runSmall = false;
-            runLarge = true;
+            runLiteExtended = true;
+            runAll = false;
         }
-        else if (strcmp(argv[i], "--both") == 0)
+        else if (strcmp(argv[i], "--production") == 0)
         {
-            runSmall = true;
-            runLarge = true;
+            runProduction = true;
+            runAll = false;
+        }
+        else if (strcmp(argv[i], "--all") == 0)
+        {
+            runLite = true;
+            runLiteExtended = true;
+            runProduction = true;
+            runAll = false;
         }
         else if (strcmp(argv[i], "--quick") == 0)
         {
@@ -176,39 +320,67 @@ int main(int argc, char* argv[])
         {
             std::cout << "Usage: " << argv[0] << " [options]\n";
             std::cout << "Options:\n";
-            std::cout << "  --small   Run only small swaption (1Y into 1Y)\n";
-            std::cout << "  --large   Run only large swaption (5Y into 5Y)\n";
-            std::cout << "  --both    Run both benchmarks (default)\n";
-            std::cout << "  --quick   Quick mode (fewer iterations)\n";
-            std::cout << "  --help    Show this message\n";
+            std::cout << "  --lite           Run lite benchmark (1Y into 1Y, 9 sensitivities)\n";
+            std::cout << "  --lite-extended  Run lite-extended benchmark (5Y into 5Y, 14 sensitivities)\n";
+            std::cout << "  --production     Run production benchmark (5Y into 5Y dual-curve, 47 sensitivities)\n";
+            std::cout << "  --all            Run all benchmarks including production\n";
+            std::cout << "  --quick          Quick mode (fewer iterations)\n";
+            std::cout << "  --help           Show this message\n";
+            std::cout << "\n";
+            std::cout << "Default: runs lite and lite-extended (not production, as FD is slow with 47 inputs)\n";
             return 0;
         }
+    }
+
+    // Default behavior: run lite and lite-extended
+    if (runAll)
+    {
+        runLite = true;
+        runLiteExtended = true;
+        runProduction = false;  // Production FD is very slow, opt-in only
     }
 
     printHeader();
     printEnvironment();
 
-    if (runSmall)
-    {
-        BenchmarkConfig smallConfig;
-        printBenchmarkHeader(smallConfig, 1);
+    int benchmarkNum = 1;
 
-        auto results = runFDBenchmark(smallConfig, quickMode);
-        outputResultsForParsing(results, "SMALL");
+    if (runLite)
+    {
+        BenchmarkConfig liteConfig;
+        printBenchmarkHeader(liteConfig, benchmarkNum++);
+
+        auto results = runFDBenchmark(liteConfig, quickMode);
+        printResultsTable(results);
+        printResultsFooter(liteConfig);
+        outputResultsForParsing(results, liteConfig.configId);
     }
 
-    if (runLarge)
+    if (runLiteExtended)
     {
-        BenchmarkConfig largeConfig;
-        largeConfig.setLargeConfig();
-        printBenchmarkHeader(largeConfig, 2);
+        BenchmarkConfig liteExtConfig;
+        liteExtConfig.setLiteExtendedConfig();
+        printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        auto results = runFDBenchmark(largeConfig, quickMode);
-        outputResultsForParsing(results, "LARGE");
+        auto results = runFDBenchmark(liteExtConfig, quickMode);
+        printResultsTable(results);
+        printResultsFooter(liteExtConfig);
+        outputResultsForParsing(results, liteExtConfig.configId);
     }
 
-    std::cout << "================================================================================\n";
-    std::cout << "  FD benchmarks complete.\n";
+    if (runProduction)
+    {
+        BenchmarkConfig prodConfig;
+        prodConfig.setProductionConfig();
+        printBenchmarkHeader(prodConfig, benchmarkNum++);
+
+        auto results = runFDBenchmarkDualCurve(prodConfig, quickMode);
+        printResultsTable(results);
+        printResultsFooter(prodConfig);
+        outputResultsForParsing(results, prodConfig.configId);
+    }
+
+    printFooter();
 
     return 0;
 }

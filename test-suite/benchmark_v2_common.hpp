@@ -61,15 +61,27 @@ inline double computeStddev(const std::vector<double>& v)
 // Maximum paths for finite differences (FD is O(n) per path for n parameters)
 constexpr int FD_MAX_PATHS = 1000;
 
+// Reduced max paths for production config (50 inputs makes FD very slow)
+constexpr int FD_MAX_PATHS_PRODUCTION = 100;
+
 struct BenchmarkConfig
 {
-    // Market data
+    // Forecasting curve market data (Euribor)
     Size numDeposits = 4;
     Size numSwaps = 5;
     std::vector<Period> depoTenors;
     std::vector<Period> swapTenors;
     std::vector<double> depoRates;
     std::vector<double> swapRates;
+
+    // Discounting curve market data (OIS) - only used when useDualCurve=true
+    bool useDualCurve = false;
+    Size numOisDeposits = 0;
+    Size numOisSwaps = 0;
+    std::vector<Period> oisDepoTenors;
+    std::vector<Period> oisSwapTenors;
+    std::vector<double> oisDepoRates;
+    std::vector<double> oisSwapRates;
 
     // LMM parameters
     Size size = 10;       // Number of forward rates
@@ -87,8 +99,10 @@ struct BenchmarkConfig
 
     // Instrument description
     std::string instrumentDesc = "European swaption (1Y into 1Y)";
-    std::string benchmarkName = "Small Swaption (1Y into 1Y)";
+    std::string benchmarkName = "Lite";
+    std::string configId = "LITE";  // For machine-parseable output
 
+    // Default: Lite config (1Y into 1Y, single curve, 9 sensitivities)
     BenchmarkConfig()
     {
         depoTenors = {1 * Days, 1 * Months, 3 * Months, 6 * Months};
@@ -98,8 +112,8 @@ struct BenchmarkConfig
         pathCounts = {10, 100, 1000, 10000, 100000};
     }
 
-    // Configure for larger swaption (5Y into 5Y)
-    void setLargeConfig()
+    // Lite-Extended config (5Y into 5Y, single curve, 14 sensitivities)
+    void setLiteExtendedConfig()
     {
         numDeposits = 4;
         numSwaps = 10;
@@ -118,10 +132,68 @@ struct BenchmarkConfig
         curveEndYears = 12;
 
         instrumentDesc = "European swaption (5Y into 5Y)";
-        benchmarkName = "Large Swaption (5Y into 5Y)";
+        benchmarkName = "Lite-Extended";
+        configId = "LITE_EXTENDED";
     }
 
-    Size numMarketQuotes() const { return numDeposits + numSwaps; }
+    // Production config (5Y into 5Y, dual curve, ~47 sensitivities)
+    // Uses separate forecasting (Euribor) and discounting (OIS) curves
+    // This represents a realistic post-2008 multi-curve setup
+    void setProductionConfig()
+    {
+        useDualCurve = true;
+
+        // Forecasting curve: Euribor deposits + swaps (21 quotes)
+        numDeposits = 6;
+        depoTenors = {1 * Days, 1 * Weeks, 1 * Months, 2 * Months, 3 * Months, 6 * Months};
+        depoRates = {0.0320, 0.0325, 0.0335, 0.0345, 0.0355, 0.0375};
+
+        numSwaps = 15;
+        swapTenors = {1 * Years, 2 * Years, 3 * Years, 4 * Years, 5 * Years,
+                      6 * Years, 7 * Years, 8 * Years, 9 * Years, 10 * Years,
+                      12 * Years, 15 * Years, 20 * Years, 25 * Years, 30 * Years};
+        swapRates = {0.0380, 0.0420, 0.0450, 0.0472, 0.0490,
+                     0.0505, 0.0518, 0.0528, 0.0536, 0.0542,
+                     0.0550, 0.0558, 0.0562, 0.0560, 0.0555};
+
+        // Discounting curve: OIS deposits + swaps (26 quotes)
+        numOisDeposits = 6;
+        oisDepoTenors = {1 * Days, 1 * Weeks, 1 * Months, 2 * Months, 3 * Months, 6 * Months};
+        oisDepoRates = {0.0300, 0.0305, 0.0312, 0.0320, 0.0328, 0.0345};
+
+        numOisSwaps = 20;
+        oisSwapTenors = {1 * Years, 2 * Years, 3 * Years, 4 * Years, 5 * Years,
+                         6 * Years, 7 * Years, 8 * Years, 9 * Years, 10 * Years,
+                         11 * Years, 12 * Years, 13 * Years, 14 * Years, 15 * Years,
+                         18 * Years, 20 * Years, 25 * Years, 30 * Years, 40 * Years};
+        oisSwapRates = {0.0355, 0.0392, 0.0420, 0.0442, 0.0460,
+                        0.0475, 0.0488, 0.0498, 0.0506, 0.0512,
+                        0.0517, 0.0520, 0.0523, 0.0525, 0.0526,
+                        0.0527, 0.0526, 0.0522, 0.0515, 0.0500};
+
+        // Total: 21 + 26 = 47 sensitivities
+
+        // LMM parameters for 5Y into 5Y swaption
+        size = 20;
+        i_opt = 10;
+        j_opt = 10;
+        steps = 20;
+
+        curveEndYears = 22;  // Extended for 20Y swap tenors
+
+        // Use fewer path counts since FD is very slow with 47 inputs
+        pathCounts = {10, 100, 1000, 10000};
+
+        instrumentDesc = "European swaption (5Y into 5Y, dual-curve)";
+        benchmarkName = "Production";
+        configId = "PRODUCTION";
+    }
+
+    Size numForecastingQuotes() const { return numDeposits + numSwaps; }
+    Size numDiscountingQuotes() const { return numOisDeposits + numOisSwaps; }
+    Size numMarketQuotes() const { return numForecastingQuotes() + numDiscountingQuotes(); }
+
+    int getMaxFDPaths() const { return useDualCurve ? FD_MAX_PATHS_PRODUCTION : FD_MAX_PATHS; }
 };
 
 // ============================================================================
@@ -185,7 +257,20 @@ inline void printBenchmarkHeader(const BenchmarkConfig& config, int benchmarkNum
     std::cout << "  Model:        LIBOR Market Model (LMM)\n";
     std::cout << "  Forward rates:" << config.size << " (semi-annual)\n";
     std::cout << "  Time steps:   " << config.steps << "\n";
-    std::cout << "  Inputs:       " << config.numMarketQuotes() << " market quotes\n";
+    if (config.useDualCurve)
+    {
+        std::cout << "  Curve setup:  Dual-curve (forecasting + discounting)\n";
+        std::cout << "  Forecasting:  " << config.numForecastingQuotes() << " quotes ("
+                  << config.numDeposits << " deposits + " << config.numSwaps << " swaps)\n";
+        std::cout << "  Discounting:  " << config.numDiscountingQuotes() << " quotes ("
+                  << config.numOisDeposits << " OIS deposits + " << config.numOisSwaps << " OIS swaps)\n";
+        std::cout << "  Total inputs: " << config.numMarketQuotes() << " market quotes\n";
+    }
+    else
+    {
+        std::cout << "  Curve setup:  Single-curve\n";
+        std::cout << "  Inputs:       " << config.numMarketQuotes() << " market quotes\n";
+    }
     std::cout << "\n";
 
     std::cout << "  BENCHMARK CONFIGURATION\n";
@@ -275,7 +360,13 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
 
     std::cout << "\n";
     std::cout << "  Speedup = FD / Method (or XAD / Method when FD not available). All times in ms.\n";
-    std::cout << "  FD only runs for paths <= " << FD_MAX_PATHS << " due to O(n) cost per path.\n";
+    std::cout << "\n";
+}
+
+inline void printResultsFooter(const BenchmarkConfig& config)
+{
+    std::cout << "  FD only runs for paths <= " << config.getMaxFDPaths()
+              << " due to O(n) cost per sensitivity.\n";
     std::cout << "\n";
 }
 
