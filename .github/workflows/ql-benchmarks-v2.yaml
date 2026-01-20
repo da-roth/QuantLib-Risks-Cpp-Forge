@@ -237,16 +237,138 @@ jobs:
           echo ""
           echo "All benchmarks ran on the same hardware for fair comparison."
           echo ""
-          echo "FD Results (plain double):"
-          grep "^FD_" QuantLib/build-double/fd_results.txt || echo "  (no FD results)"
-          echo ""
-          echo "XAD Results (tape only):"
-          grep "^XAD_" QuantLib/build-xad/xad_results.txt || echo "  (no XAD results)"
-          echo ""
-          echo "Forge Results (JIT + JIT-AVX):"
-          grep -E "^(XAD_|JIT_|JITAVX_)" QuantLib/build-forge/forge_results.txt || echo "  (no Forge results)"
+
+          # Create a Python script to parse and format results
+          cat > format_results.py << 'PYEOF'
+          import sys
+          import re
+          from collections import defaultdict
+
+          def parse_line(line):
+              """Parse a line like 'METHOD_CONFIG:10=1.5,0.1,1[,fixed];100=5.2,0.2,1[,fixed]'"""
+              match = re.match(r'^(\w+)_(\w+):(.+)$', line.strip())
+              if not match:
+                  return None
+              method, config, data = match.groups()
+              results = {}
+              for item in data.split(';'):
+                  if '=' in item:
+                      paths, vals = item.split('=')
+                      parts = vals.split(',')
+                      mean, std, enabled = parts[0], parts[1], parts[2]
+                      fixed = float(parts[3]) if len(parts) > 3 else 0.0
+                      if enabled == '1' and float(mean) > 0:
+                          results[int(paths)] = {'mean': float(mean), 'fixed': fixed}
+              return method, config, results
+
+          def format_num(n):
+              """Format number with appropriate precision"""
+              if n >= 1000:
+                  return f"{n:.0f}"
+              elif n >= 100:
+                  return f"{n:.1f}"
+              elif n >= 10:
+                  return f"{n:.1f}"
+              else:
+                  return f"{n:.2f}"
+
+          def format_paths(p):
+              """Format path count: 100, 1K, 10K, 100K"""
+              if p >= 1000:
+                  return f"{p//1000}K"
+              return str(p)
+
+          # Read all result files
+          data = defaultdict(lambda: defaultdict(dict))  # data[config][method][paths] = {mean, fixed}
+
+          for filepath in sys.argv[1:]:
+              try:
+                  with open(filepath) as f:
+                      for line in f:
+                          result = parse_line(line)
+                          if result:
+                              method, config, results = result
+                              for paths, vals in results.items():
+                                  data[config][method][paths] = vals
+              except FileNotFoundError:
+                  pass
+
+          # Print tables for each config
+          configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
+          config_names = {
+              'LITE': 'Lite (1Y×1Y, 9 inputs)',
+              'LITE_EXTENDED': 'Lite-Extended (5Y×5Y, 14 inputs)',
+              'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
+          }
+
+          for config in configs:
+              if config not in data:
+                  continue
+
+              print(f"\n### {config_names.get(config, config)}\n")
+              methods = data[config]
+              all_paths = sorted(set(p for m in methods.values() for p in m.keys()))
+
+              if not all_paths:
+                  continue
+
+              # Check if any JIT method has fixed cost data
+              has_fixed = False
+              for m in ['JIT', 'JITAVX']:
+                  if m in methods:
+                      for p, v in methods[m].items():
+                          if v.get('fixed', 0) > 0:
+                              has_fixed = True
+                              break
+
+              # Header
+              method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+              present_methods = [m for m in method_order if m in methods]
+              if has_fixed:
+                  header = "| Paths |" + "".join(f" {m} |" for m in present_methods) + " Setup* |"
+                  sep = "|------:|" + "".join("-------:|" for _ in present_methods) + "-------:|"
+              else:
+                  header = "| Paths |" + "".join(f" {m} |" for m in present_methods)
+                  sep = "|------:|" + "".join("-------:|" for _ in present_methods)
+              print(header)
+              print(sep)
+
+              # Data rows
+              for paths in all_paths:
+                  row = f"| {format_paths(paths)} |"
+                  fixed_val = 0
+                  for m in present_methods:
+                      val = methods[m].get(paths)
+                      if val:
+                          row += f" {format_num(val['mean'])} |"
+                          if m in ['JIT', 'JITAVX'] and val.get('fixed', 0) > 0:
+                              fixed_val = val['fixed']
+                      else:
+                          row += " - |"
+                  if has_fixed:
+                      if fixed_val > 0:
+                          row += f" {format_num(fixed_val)} |"
+                      else:
+                          row += " - |"
+                  print(row)
+
+          print("\n_All times in milliseconds (ms)._")
+          print("_*Setup = one-time cost for JIT (curve bootstrap + Jacobian). Constant regardless of paths._")
+          PYEOF
+
+          python3 format_results.py \
+            QuantLib/build-double/fd_results.txt \
+            QuantLib/build-xad/xad_results.txt \
+            QuantLib/build-forge/forge_results.txt
+
           echo ""
           echo "================================================================================"
+          echo ""
+          echo "Raw data (for parsing):"
+          echo ""
+          grep "^FD_" QuantLib/build-double/fd_results.txt 2>/dev/null || true
+          grep "^XAD_" QuantLib/build-xad/xad_results.txt 2>/dev/null || true
+          grep -E "^(XAD_|JIT_|JITAVX_)" QuantLib/build-forge/forge_results.txt 2>/dev/null || true
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -441,6 +563,113 @@ jobs:
           cd QuantLib\build-xad
           QuantLib-Risks-Cpp\test-suite\benchmark-aad-v2.exe --all --xad-only > xad_results.txt 2>&1
           type xad_results.txt
+
+      - name: Generate Combined Report
+        shell: pwsh
+        run: |
+          Write-Host "================================================================================"
+          Write-Host "  COMBINED BENCHMARK RESULTS (Windows)"
+          Write-Host "================================================================================"
+          Write-Host ""
+          Write-Host "All benchmarks ran on the same hardware for fair comparison."
+          Write-Host ""
+
+          $script = @'
+          import sys
+          import re
+          from collections import defaultdict
+
+          def parse_line(line):
+              match = re.match(r'^(\w+)_(\w+):(.+)$', line.strip())
+              if not match:
+                  return None
+              method, config, data = match.groups()
+              results = {}
+              for item in data.split(';'):
+                  if '=' in item:
+                      paths, vals = item.split('=')
+                      parts = vals.split(',')
+                      mean, std, enabled = parts[0], parts[1], parts[2]
+                      fixed = float(parts[3]) if len(parts) > 3 else 0.0
+                      if enabled == '1' and float(mean) > 0:
+                          results[int(paths)] = {'mean': float(mean), 'fixed': fixed}
+              return method, config, results
+
+          def format_num(n):
+              if n >= 1000: return f"{n:.0f}"
+              elif n >= 10: return f"{n:.1f}"
+              else: return f"{n:.2f}"
+
+          def format_paths(p):
+              if p >= 1000: return f"{p//1000}K"
+              return str(p)
+
+          data = defaultdict(lambda: defaultdict(dict))
+          for filepath in sys.argv[1:]:
+              try:
+                  with open(filepath) as f:
+                      for line in f:
+                          result = parse_line(line)
+                          if result:
+                              method, config, results = result
+                              for paths, vals in results.items():
+                                  data[config][method][paths] = vals
+              except: pass
+
+          configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
+          names = {'LITE': 'Lite (1Yx1Y, 9 inputs)', 'LITE_EXTENDED': 'Lite-Extended (5Yx5Y, 14 inputs)', 'PRODUCTION': 'Production (5Yx5Y dual-curve, 45 inputs)'}
+
+          for config in configs:
+              if config not in data: continue
+              print(f"\n### {names.get(config, config)}\n")
+              methods = data[config]
+              all_paths = sorted(set(p for m in methods.values() for p in m.keys()))
+              if not all_paths: continue
+
+              has_fixed = False
+              for m in ['JIT', 'JITAVX']:
+                  if m in methods:
+                      for p, v in methods[m].items():
+                          if v.get('fixed', 0) > 0:
+                              has_fixed = True
+                              break
+
+              method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+              present = [m for m in method_order if m in methods]
+              if has_fixed:
+                  print("| Paths |" + "".join(f" {m} |" for m in present) + " Setup* |")
+                  print("|------:|" + "".join("-------:|" for _ in present) + "-------:|")
+              else:
+                  print("| Paths |" + "".join(f" {m} |" for m in present))
+                  print("|------:|" + "".join("-------:|" for _ in present))
+
+              for paths in all_paths:
+                  row = f"| {format_paths(paths)} |"
+                  fixed_val = 0
+                  for m in present:
+                      v = methods[m].get(paths)
+                      if v:
+                          row += f" {format_num(v['mean'])} |"
+                          if m in ['JIT', 'JITAVX'] and v.get('fixed', 0) > 0:
+                              fixed_val = v['fixed']
+                      else:
+                          row += " - |"
+                  if has_fixed:
+                      row += f" {format_num(fixed_val)} |" if fixed_val > 0 else " - |"
+                  print(row)
+
+          print("\n_All times in milliseconds (ms)._")
+          print("_*Setup = one-time cost for JIT (curve bootstrap + Jacobian). Constant regardless of paths._")
+          '@
+
+          $script | Out-File -FilePath format_results.py -Encoding utf8
+          python format_results.py `
+            QuantLib/build-double/fd_results.txt `
+            QuantLib/build-xad/xad_results.txt `
+            QuantLib/build-forge/forge_results.txt
+
+          Write-Host ""
+          Write-Host "================================================================================"
 
       - name: Upload Results
         uses: actions/upload-artifact@v4

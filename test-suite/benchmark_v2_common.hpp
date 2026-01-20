@@ -212,6 +212,11 @@ struct TimingResult
     bool xad_enabled = false;
     bool jit_enabled = false;
     bool jit_avx_enabled = false;
+
+    // JIT decomposition (fixed costs that don't scale with paths)
+    double jit_curve_mean = 0;      // Curve building time
+    double jit_jacobian_mean = 0;   // Jacobian computation time
+    double jit_fixed_mean = 0;      // Total fixed cost (curve + jacobian)
 };
 
 // ============================================================================
@@ -303,9 +308,28 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
     std::cout << "================================================================================\n";
     std::cout << "\n";
 
+    // Check if any JIT result has fixed cost data
+    bool hasJitFixed = false;
+    for (const auto& r : results)
+    {
+        if (r.jit_enabled && r.jit_fixed_mean > 0)
+        {
+            hasJitFixed = true;
+            break;
+        }
+    }
+
     // Table header
-    std::cout << "| Paths  |    Method |     Mean |   StdDev | Speedup |\n";
-    std::cout << "|-------:|----------:|---------:|---------:|--------:|\n";
+    if (hasJitFixed)
+    {
+        std::cout << "| Paths  |    Method |     Mean |   StdDev |  Setup* | Speedup |\n";
+        std::cout << "|-------:|----------:|---------:|---------:|--------:|--------:|\n";
+    }
+    else
+    {
+        std::cout << "| Paths  |    Method |     Mean |   StdDev | Speedup |\n";
+        std::cout << "|-------:|----------:|---------:|---------:|--------:|\n";
+    }
 
     for (size_t i = 0; i < results.size(); ++i)
     {
@@ -316,7 +340,8 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
         double baseline = r.fd_enabled ? r.fd_mean : r.xad_mean;
         bool first = true;
 
-        auto printRow = [&](const std::string& method, double mean, double stddev, bool enabled)
+        auto printRow = [&](const std::string& method, double mean, double stddev, bool enabled,
+                            double fixed_cost = 0.0, bool showFixed = false)
         {
             if (!enabled) return;
 
@@ -335,6 +360,19 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
             std::cout << " | " << std::setw(8) << std::fixed << std::setprecision(1) << mean;
             std::cout << " | " << std::setw(8) << std::fixed << std::setprecision(1) << stddev;
 
+            // Setup column (only shown when hasJitFixed is true)
+            if (hasJitFixed)
+            {
+                if (showFixed && fixed_cost > 0)
+                {
+                    std::cout << " | " << std::setw(7) << std::fixed << std::setprecision(1) << fixed_cost;
+                }
+                else
+                {
+                    std::cout << " |     ---";
+                }
+            }
+
             if (mean == baseline)
             {
                 std::cout << " |     --- |";
@@ -349,18 +387,32 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
 
         printRow("FD", r.fd_mean, r.fd_std, r.fd_enabled);
         printRow("XAD", r.xad_mean, r.xad_std, r.xad_enabled);
-        printRow("JIT", r.jit_mean, r.jit_std, r.jit_enabled);
-        printRow("JIT-AVX", r.jit_avx_mean, r.jit_avx_std, r.jit_avx_enabled);
+        printRow("JIT", r.jit_mean, r.jit_std, r.jit_enabled, r.jit_fixed_mean, true);
+        printRow("JIT-AVX", r.jit_avx_mean, r.jit_avx_std, r.jit_avx_enabled, r.jit_fixed_mean, true);
 
         // Separator between path count groups
         if (i < results.size() - 1)
         {
-            std::cout << "|--------+-----------+----------+----------+---------|\n";
+            if (hasJitFixed)
+            {
+                std::cout << "|--------+-----------+----------+----------+---------+---------|\n";
+            }
+            else
+            {
+                std::cout << "|--------+-----------+----------+----------+---------|\n";
+            }
         }
     }
 
     std::cout << "\n";
-    std::cout << "  Speedup = FD / Method (or XAD / Method when FD not available). All times in ms.\n";
+    std::cout << "  All times in milliseconds (ms).\n";
+    std::cout << "  Speedup = FD / Method (or XAD / Method when FD not available).\n";
+    if (hasJitFixed)
+    {
+        std::cout << "\n";
+        std::cout << "  * Setup = one-time cost for JIT methods (curve bootstrap + Jacobian computation).\n";
+        std::cout << "    This cost is constant regardless of path count. The remaining time scales with paths.\n";
+    }
     std::cout << "\n";
 }
 

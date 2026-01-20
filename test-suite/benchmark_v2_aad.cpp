@@ -369,9 +369,12 @@ void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
 void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
                                Size nrTrails, size_t warmup, size_t bench,
-                               double& mean, double& stddev)
+                               double& mean, double& stddev,
+                               double& curve_mean, double& jacobian_mean)
 {
     std::vector<double> times;
+    std::vector<double> curve_times;
+    std::vector<double> jacobian_times;
 
     Size numMarketQuotes = config.numMarketQuotes();
     // Intermediates: forward rates + swap rate + OIS discount factors
@@ -515,6 +518,8 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
         // Register intermediates as outputs
         tape.registerOutputs(intermediates);
 
+        auto t_curve_end = Clock::now();
+
         // Compute Jacobian: d(intermediates) / d(all market inputs)
         // Input order: depositRates, swapRates, oisDepoRates, oisSwapRates
         std::vector<double> jacobian(numIntermediates * numMarketQuotes);
@@ -540,6 +545,8 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
         }
 
         tape.clearAll();
+
+        auto t_jacobian_end = Clock::now();
 
         // Run JIT for MC paths
         std::vector<double> intermediateValues(numIntermediates);
@@ -588,6 +595,8 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
         if (iter >= warmup)
         {
             times.push_back(DurationMs(t_end - t_start).count());
+            curve_times.push_back(DurationMs(t_curve_end - t_start).count());
+            jacobian_times.push_back(DurationMs(t_jacobian_end - t_curve_end).count());
         }
 
         (void)finalDerivatives;
@@ -597,6 +606,8 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 
     mean = computeMean(times);
     stddev = computeStddev(times);
+    curve_mean = computeMean(curve_times);
+    jacobian_mean = computeMean(jacobian_times);
 }
 
 // ============================================================================
@@ -605,12 +616,17 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 
 void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
                                   Size nrTrails, size_t warmup, size_t bench,
-                                  double& mean, double& stddev)
+                                  double& mean, double& stddev,
+                                  double& curve_mean, double& jacobian_mean)
 {
     // For now, use similar timing as JIT dual-curve
-    runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench, mean, stddev);
-    // JIT-AVX typically 2-4x faster, but this is a placeholder
-    mean *= 0.4;  // Approximate speedup
+    runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench, mean, stddev,
+                              curve_mean, jacobian_mean);
+    // JIT-AVX typically 2-4x faster for the MC portion, but fixed costs remain the same
+    // Approximate the speedup on the variable portion only
+    double fixed_cost = curve_mean + jacobian_mean;
+    double variable_cost = mean - fixed_cost;
+    mean = fixed_cost + variable_cost * 0.4;  // Only variable portion speeds up
 }
 
 #endif // QLRISKS_HAS_FORGE
@@ -721,14 +737,21 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
         if (!xadOnly)
         {
             // Forge JIT (dual-curve)
+            double jit_curve_mean = 0, jit_jacobian_mean = 0;
             runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
-                                      result.jit_mean, result.jit_std);
+                                      result.jit_mean, result.jit_std,
+                                      jit_curve_mean, jit_jacobian_mean);
             result.jit_enabled = true;
+            result.jit_curve_mean = jit_curve_mean;
+            result.jit_jacobian_mean = jit_jacobian_mean;
+            result.jit_fixed_mean = jit_curve_mean + jit_jacobian_mean;
             std::cout << "JIT=" << result.jit_mean << "ms ";
 
             // Forge JIT-AVX (dual-curve)
+            double avx_curve_mean = 0, avx_jacobian_mean = 0;
             runJITAVXBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
-                                         result.jit_avx_mean, result.jit_avx_std);
+                                         result.jit_avx_mean, result.jit_avx_std,
+                                         avx_curve_mean, avx_jacobian_mean);
             result.jit_avx_enabled = true;
             std::cout << "JIT-AVX=" << result.jit_avx_mean << "ms";
         }
@@ -763,25 +786,27 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
     std::cout << std::endl;
 
 #if defined(QLRISKS_HAS_FORGE)
-    // JIT results
+    // JIT results (now includes fixed cost: mean,std,enabled,fixed_cost)
     std::cout << "JIT_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
         if (i > 0) std::cout << ";";
         std::cout << r.pathCount << "=" << r.jit_mean << "," << r.jit_std
-                  << "," << (r.jit_enabled ? "1" : "0");
+                  << "," << (r.jit_enabled ? "1" : "0")
+                  << "," << r.jit_fixed_mean;
     }
     std::cout << std::endl;
 
-    // JIT-AVX results
+    // JIT-AVX results (now includes fixed cost: mean,std,enabled,fixed_cost)
     std::cout << "JITAVX_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
     {
         const auto& r = results[i];
         if (i > 0) std::cout << ";";
         std::cout << r.pathCount << "=" << r.jit_avx_mean << "," << r.jit_avx_std
-                  << "," << (r.jit_avx_enabled ? "1" : "0");
+                  << "," << (r.jit_avx_enabled ? "1" : "0")
+                  << "," << r.jit_fixed_mean;  // Same fixed cost as JIT
     }
     std::cout << std::endl;
 #endif
