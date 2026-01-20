@@ -244,10 +244,237 @@ jobs:
           cmake --build build
           cmake --install build
 
-      - name: Configure QuantLib
+      # =========================================================================
+      # Build 1: QuantLib with plain double (for FD benchmark)
+      # =========================================================================
+      - name: Create FD benchmark for plain double
+        run: |
+          mkdir -p QuantLib/test-suite-double
+          cat > QuantLib/test-suite-double/benchmark_fd_double.cpp << 'EOFCPP'
+          /*
+           * FD Benchmark using plain double (no XAD types)
+           * Computes sensitivities via finite differences
+           */
+          #include <ql/quantlib.hpp>
+          #include <chrono>
+          #include <iostream>
+          #include <iomanip>
+          #include <vector>
+          #include <numeric>
+          #include <cmath>
+          #include <algorithm>
+
+          using namespace QuantLib;
+
+          double computeMean(const std::vector<double>& v) {
+              if (v.empty()) return 0.0;
+              return std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+          }
+
+          ext::shared_ptr<IborIndex> makeIndex(std::vector<Date> dates, const std::vector<Rate>& rates) {
+              DayCounter dayCounter = Actual360();
+              RelinkableHandle<YieldTermStructure> termStructure;
+              ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+              Date todaysDate = index->fixingCalendar().adjust(Date(4, September, 2005));
+              Settings::instance().evaluationDate() = todaysDate;
+              dates[0] = index->fixingCalendar().advance(todaysDate, index->fixingDays(), Days);
+              termStructure.linkTo(ext::make_shared<ZeroCurve>(dates, rates, dayCounter));
+              return index;
+          }
+
+          // Single pricing function for a given set of rates
+          double priceSwaptionMC(Size size, Size i_opt, Size j_opt, Size steps, int curveEndYears,
+                                 const std::vector<double>& zeroRates,
+                                 const std::vector<std::vector<double>>& allRandoms,
+                                 Size nrTrails) {
+              Calendar calendar = TARGET();
+              Date todaysDate(4, September, 2005);
+              Settings::instance().evaluationDate() = todaysDate;
+              Integer fixingDays = 2;
+              Date settlementDate = calendar.adjust(calendar.advance(todaysDate, fixingDays, Days));
+              DayCounter dayCounter = Actual360();
+
+              std::vector<Date> baseDates = {settlementDate, settlementDate + curveEndYears * Years};
+              auto baseIndex = makeIndex(baseDates, zeroRates);
+
+              ext::shared_ptr<LiborForwardModelProcess> process(
+                  new LiborForwardModelProcess(size, baseIndex));
+              process->setCovarParam(ext::make_shared<LfmCovarianceProxy>(
+                  ext::make_shared<LmLinearExponentialVolatilityModel>(
+                      process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                  ext::make_shared<LmExponentialCorrelationModel>(size, 0.5)));
+
+              std::vector<Time> fixingTimes = process->fixingTimes();
+              TimeGrid grid(fixingTimes.begin(), fixingTimes.end(), steps);
+
+              std::vector<Size> location;
+              for (Size idx = 0; idx < fixingTimes.size(); ++idx)
+                  location.push_back(std::find(grid.begin(), grid.end(), fixingTimes[idx]) - grid.begin());
+
+              Size numFactors = process->factors();
+              Size exerciseStep = location[i_opt];
+              Size fullGridSteps = grid.size() - 1;
+
+              BusinessDayConvention convention = baseIndex->businessDayConvention();
+              Date fwdStart = settlementDate + Period(6 * i_opt, Months);
+              Date fwdMaturity = fwdStart + Period(6 * j_opt, Months);
+              Schedule schedule(fwdStart, fwdMaturity, baseIndex->tenor(), calendar,
+                                convention, convention, DateGeneration::Forward, false);
+
+              std::vector<double> accrualStart(size), accrualEnd(size);
+              for (Size k = 0; k < size; ++k) {
+                  accrualStart[k] = process->accrualStartTimes()[k];
+                  accrualEnd[k] = process->accrualEndTimes()[k];
+              }
+
+              ext::shared_ptr<VanillaSwap> fwdSwap(
+                  new VanillaSwap(Swap::Receiver, 1.0, schedule, 0.05, dayCounter,
+                                  schedule, baseIndex, 0.0, baseIndex->dayCounter()));
+              fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+                  baseIndex->forwardingTermStructure()));
+              double swapRate = fwdSwap->fairRate();
+              Array initRates = process->initialValues();
+
+              double price = 0.0;
+              for (Size n = 0; n < nrTrails; ++n) {
+                  Array asset(size);
+                  for (Size k = 0; k < size; ++k) asset[k] = initRates[k];
+                  Array assetAtExercise(size);
+                  for (Size step = 1; step <= fullGridSteps; ++step) {
+                      Size offset = (step - 1) * numFactors;
+                      Array dw(numFactors);
+                      for (Size f = 0; f < numFactors; ++f)
+                          dw[f] = allRandoms[n][offset + f];
+                      asset = process->evolve(grid[step - 1], asset, grid.dt(step - 1), dw);
+                      if (step == exerciseStep)
+                          for (Size k = 0; k < size; ++k) assetAtExercise[k] = asset[k];
+                  }
+                  Array dis(size);
+                  double df = 1.0;
+                  for (Size k = 0; k < size; ++k) {
+                      df = df / (1.0 + assetAtExercise[k] * (accrualEnd[k] - accrualStart[k]));
+                      dis[k] = df;
+                  }
+                  double npv = 0.0;
+                  for (Size m = i_opt; m < i_opt + j_opt; ++m)
+                      npv += (swapRate - assetAtExercise[m]) * (accrualEnd[m] - accrualStart[m]) * dis[m];
+                  if (npv > 0.0) price += npv;
+              }
+              return price / nrTrails;
+          }
+
+          void runFDBenchmark(Size size, Size i_opt, Size j_opt, Size steps, int curveEndYears,
+                              std::vector<std::pair<int, double>>& results) {
+              using Clock = std::chrono::high_resolution_clock;
+              using Duration = std::chrono::duration<double, std::milli>;
+
+              std::vector<double> baseRates = {0.035, 0.0575};
+              Size numInputs = baseRates.size();
+              double bumpSize = 1e-5;
+
+              Size numFactors = size;
+              Size fullGridSteps = steps;
+              Size fullGridRandoms = fullGridSteps * numFactors * 2;
+
+              std::vector<int> pathCounts = {10, 100, 1000, 10000};
+              Size maxPaths = 10000;
+
+              std::cerr << "  Generating randoms..." << std::flush;
+              typedef PseudoRandom::rsg_type rsg_type;
+              rsg_type rsg = PseudoRandom::make_sequence_generator(fullGridRandoms, BigNatural(42));
+              std::vector<std::vector<double>> allRandoms(maxPaths);
+              for (Size n = 0; n < maxPaths; ++n) {
+                  allRandoms[n].resize(fullGridRandoms);
+                  const auto& seq = rsg.nextSequence();
+                  for (Size m = 0; m < fullGridRandoms; ++m)
+                      allRandoms[n][m] = seq.value[m];
+              }
+              std::cerr << " Done." << std::endl;
+
+              size_t warmupIters = 2, benchIters = 5;
+
+              for (size_t tc = 0; tc < pathCounts.size(); ++tc) {
+                  Size nrTrails = pathCounts[tc];
+                  std::vector<double> times;
+
+                  for (size_t iter = 0; iter < warmupIters + benchIters; ++iter) {
+                      auto t_start = Clock::now();
+
+                      double basePrice = priceSwaptionMC(size, i_opt, j_opt, steps, curveEndYears,
+                                                         baseRates, allRandoms, nrTrails);
+
+                      std::vector<double> sensitivities(numInputs);
+                      for (Size i = 0; i < numInputs; ++i) {
+                          std::vector<double> bumpedRates = baseRates;
+                          bumpedRates[i] += bumpSize;
+                          double bumpedPrice = priceSwaptionMC(size, i_opt, j_opt, steps, curveEndYears,
+                                                               bumpedRates, allRandoms, nrTrails);
+                          sensitivities[i] = (bumpedPrice - basePrice) / bumpSize;
+                      }
+                      (void)sensitivities;
+                      (void)basePrice;
+
+                      auto t_end = Clock::now();
+                      if (iter >= warmupIters)
+                          times.push_back(Duration(t_end - t_start).count());
+                  }
+                  results.push_back({pathCounts[tc], computeMean(times)});
+              }
+          }
+
+          int main() {
+              std::vector<std::pair<int, double>> smallResults, largeResults;
+
+              std::cerr << "Running small swaption FD benchmark..." << std::endl;
+              runFDBenchmark(10, 2, 2, 8, 6, smallResults);
+
+              std::cerr << "Running large swaption FD benchmark..." << std::endl;
+              runFDBenchmark(20, 10, 10, 20, 12, largeResults);
+
+              std::cout << "FD_SMALL:";
+              for (auto& r : smallResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              std::cout << "FD_LARGE:";
+              for (auto& r : largeResults) std::cout << r.first << "=" << r.second << ";";
+              std::cout << std::endl;
+
+              return 0;
+          }
+          EOFCPP
+
+      - name: Add FD benchmark target to QuantLib CMakeLists
+        run: |
+          cat >> QuantLib/CMakeLists.txt << 'EOF'
+
+          # Plain double FD benchmark for fair AAD comparison
+          add_executable(benchmark_fd_double test-suite-double/benchmark_fd_double.cpp)
+          target_link_libraries(benchmark_fd_double PRIVATE ql_library ${QL_THREAD_LIBRARIES})
+          EOF
+
+      - name: Configure QuantLib (plain double)
         run: |
           cd QuantLib
-          cmake -B build -G Ninja -DBOOST_ROOT=/usr \
+          cmake -B build-double -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF
+
+      - name: Build QuantLib and FD benchmark (plain double)
+        run: |
+          cd QuantLib/build-double
+          cmake --build . --target benchmark_fd_double
+
+      # =========================================================================
+      # Build 2: QuantLib-Risks with xad::AReal<double> + Forge (for AAD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (xad::AReal + Forge)
+        run: |
+          cd QuantLib
+          cmake -B build-xad -G Ninja -DBOOST_ROOT=/usr \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -268,16 +495,26 @@ jobs:
             -DQLRISKS_BUILD_BENCHMARK_STANDALONE=ON \
             -DQLRISKS_ENABLE_FORGE_TESTS=ON
 
-      - name: Build
+      - name: Build QuantLib-Risks (xad::AReal + Forge)
         run: |
-          cd QuantLib/build
+          cd QuantLib/build-xad
           cmake --build .
 
-      - name: Run Benchmark
+      # =========================================================================
+      # Run both benchmarks
+      # =========================================================================
+      - name: Run FD Benchmark (plain double)
         run: |
-          cd QuantLib/build
+          echo "===== Running FD benchmark on plain double ====="
+          cd QuantLib/build-double
+          ./benchmark_fd_double 2>&1 | tee fd_results.txt
+
+      - name: Run AAD Benchmark (xad::AReal + Forge)
+        run: |
+          echo "===== Running AAD benchmark on xad::AReal + Forge ====="
+          cd QuantLib/build-xad
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone
+          ./QuantLib-Risks-Cpp/test-suite/quantlib-risks-benchmark-standalone 2>&1 | tee aad_results.txt
 
   ##############################################################################
   # Windows, QL + XAD (True Baseline)
