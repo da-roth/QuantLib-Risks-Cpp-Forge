@@ -19,20 +19,12 @@ set(QLRISKS_TEST_SOURCES
     quantlibtestsuite_xad.cpp
 )
 
-# XAD JIT tests - uses C++ interpreter backend, does NOT require Forge
-# These test XAD's JIT compilation infrastructure with the built-in interpreter
-option(QLRISKS_ENABLE_JIT_TESTS "Enable XAD JIT tests (uses interpreter backend, no Forge required)" OFF)
-if(QLRISKS_ENABLE_JIT_TESTS)
-    message(STATUS "QLRisks test-suite: Adding XAD JIT tests (interpreter backend)")
-    list(APPEND QLRISKS_TEST_SOURCES jit_xad.cpp)
-endif()
-
 # Forge JIT tests - require Forge's native code backend
-# These tests require xad-forge for native machine code generation
+# Tests QuantLib-specific JIT functionality (swaption pricing pipeline)
 set(QLRISKS_FORGE_TESTS_ENABLED FALSE)
 if(QLRISKS_ENABLE_FORGE_TESTS AND TARGET QLRisks::forge)
     message(STATUS "QLRisks test-suite: Adding Forge JIT tests (native code backend)")
-    list(APPEND QLRISKS_TEST_SOURCES forgebackend_xad.cpp swaption_jit_pipeline_xad.cpp)
+    list(APPEND QLRISKS_TEST_SOURCES swaption_jit_pipeline_xad.cpp)
     set(QLRISKS_FORGE_TESTS_ENABLED TRUE)
 elseif(QLRISKS_ENABLE_FORGE_TESTS)
     message(WARNING "QLRisks test-suite: QLRISKS_ENABLE_FORGE_TESTS=ON but QLRisks::forge not available")
