@@ -71,7 +71,7 @@ env:
 
 jobs:
   ##############################################################################
-  # Linux - Original XAD (mirrors QuantLib-Risks-Cpp)
+  # Linux - XAD
   #
   # Note on disable_aad naming: This uses the original QuantLib-Risks-Cpp
   # convention where QLRISKS_DISABLE_AAD=OFF means AAD is ENABLED (not disabled).
