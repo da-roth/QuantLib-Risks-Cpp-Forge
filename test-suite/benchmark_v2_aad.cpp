@@ -32,7 +32,7 @@
 
 using namespace benchmark_v2;
 using Clock = std::chrono::high_resolution_clock;
-using Duration = std::chrono::duration<double, std::milli>;
+using DurationMs = std::chrono::duration<double, std::milli>;
 
 // Use QuantLib's Real which is xad::AReal<double> via qlrisks.hpp
 using RealAD = QuantLib::Real;
@@ -78,7 +78,7 @@ void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
         if (iter >= warmup)
         {
-            times.push_back(Duration(t_end - t_start).count());
+            times.push_back(DurationMs(t_end - t_start).count());
         }
 
         tape.clearAll();
@@ -277,7 +277,7 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
         if (iter >= warmup)
         {
-            times.push_back(Duration(t_end - t_start).count());
+            times.push_back(DurationMs(t_end - t_start).count());
         }
 
         (void)finalDerivatives;

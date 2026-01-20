@@ -24,7 +24,7 @@
 
 using namespace benchmark_v2;
 using Clock = std::chrono::high_resolution_clock;
-using Duration = std::chrono::duration<double, std::milli>;
+using DurationMs = std::chrono::duration<double, std::milli>;
 
 // ============================================================================
 // FD Benchmark Runner
@@ -99,7 +99,7 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
 
             if (iter >= warmup)
             {
-                fd_times.push_back(Duration(t_end - t_start).count());
+                fd_times.push_back(DurationMs(t_end - t_start).count());
             }
 
             // Suppress unused warnings
