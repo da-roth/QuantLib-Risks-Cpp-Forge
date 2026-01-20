@@ -214,20 +214,20 @@ jobs:
         run: |
           echo "===== FD BENCHMARK (plain double QuantLib) ====="
           cd QuantLib/build-double
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_fd_v2 2>&1 | tee fd_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_fd_v2 --all 2>&1 | tee fd_results.txt
 
       - name: Run XAD Benchmark (JIT off)
         run: |
           echo "===== XAD BENCHMARK (XAD tape, JIT disabled) ====="
           cd QuantLib/build-xad
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --xad-only 2>&1 | tee xad_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --all --xad-only 2>&1 | tee xad_results.txt
 
       - name: Run Forge Benchmark (JIT on)
         run: |
           echo "===== FORGE BENCHMARK (XAD + Forge JIT) ====="
           cd QuantLib/build-forge
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
-          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 2>&1 | tee forge_results.txt
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --all 2>&1 | tee forge_results.txt
 
       # =========================================================================
       # Combine and display results
