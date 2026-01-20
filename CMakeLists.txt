@@ -82,7 +82,9 @@ endif()
 # Test suite (after QLRisks::forge is defined)
 ##############################################################################
 
-if(NOT QLRISKS_DISABLE_AAD)
-    # the test suite is not supporting double
-	add_subdirectory(test-suite)
+# Add test-suite if:
+# 1. AAD is enabled (for XAD-based tests and benchmarks), OR
+# 2. V2 FD benchmark is requested (works with plain double)
+if(NOT QLRISKS_DISABLE_AAD OR QLRISKS_BUILD_BENCHMARK_V2_FD)
+    add_subdirectory(test-suite)
 endif()
