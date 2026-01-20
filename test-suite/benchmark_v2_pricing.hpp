@@ -41,16 +41,13 @@ namespace benchmark_v2 {
 // ============================================================================
 
 template <typename T>
-inline double getValue(const T& x)
+inline double extractValue(const T& x)
 {
     if constexpr (std::is_same_v<T, double>)
         return x;
     else
         return value(x);  // XAD's value() function
 }
-
-// Overload for plain double
-inline double getValue(double x) { return x; }
 
 // ============================================================================
 // Helper: Create IborIndex with ZeroCurve (templated)
@@ -156,8 +153,8 @@ struct LMMSetup
         accrualEnd.resize(config.size);
         for (Size k = 0; k < config.size; ++k)
         {
-            accrualStart[k] = getValue(baseProcess->accrualStartTimes()[k]);
-            accrualEnd[k] = getValue(baseProcess->accrualEndTimes()[k]);
+            accrualStart[k] = extractValue(baseProcess->accrualStartTimes()[k]);
+            accrualEnd[k] = extractValue(baseProcess->accrualEndTimes()[k]);
         }
 
         // Pre-generate random numbers
@@ -177,7 +174,7 @@ struct LMMSetup
             const auto& seq = rsg.nextSequence();
             for (Size m = 0; m < fullGridRandoms; ++m)
             {
-                allRandoms[n][m] = getValue(seq.value[m]);
+                allRandoms[n][m] = extractValue(seq.value[m]);
             }
         }
         std::cout << " Done." << std::endl;
@@ -305,11 +302,19 @@ RealType priceSwaption(const BenchmarkConfig& config,
             npv += (swapRate - assetAtExercise[m]) * accrual * dis[m];
         }
 
-        // max(npv, 0)
+        // max(npv, 0) - use smooth approximation for AD types
         if constexpr (std::is_same_v<RealType, double>)
+        {
             price += std::max(npv, 0.0);
+        }
         else
-            price += max(npv, RealType(0.0));
+        {
+            // For AD types, use value() comparison to determine branch
+            // This gives correct forward value; derivative uses indicator function
+            if (value(npv) > 0.0)
+                price += npv;
+            // else: price += 0, which is a no-op
+        }
     }
 
     return price / RealType(static_cast<double>(nrTrails));

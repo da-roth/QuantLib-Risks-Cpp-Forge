@@ -143,6 +143,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF \
             -DQL_BUILD_BENCHMARK=OFF \
             -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQLRISKS_DISABLE_AAD=ON \
             -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
 
       - name: Build FD benchmark (plain double)
@@ -345,6 +346,7 @@ jobs:
             -DQL_BUILD_EXAMPLES=OFF ^
             -DQL_BUILD_BENCHMARK=OFF ^
             -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQLRISKS_DISABLE_AAD=ON ^
             -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
 
       - name: Build FD benchmark (plain double)
