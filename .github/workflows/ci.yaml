@@ -293,7 +293,7 @@ jobs:
           AdjointSwapXAD.exe
 
   ##############################################################################
-  # macOS - Original XAD (mirrors QuantLib-Risks-Cpp)
+  # macOS - XAD
   # Note: Forge not supported on macOS ARM yet
   ##############################################################################
   xad-macos:
