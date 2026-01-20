@@ -1,0 +1,456 @@
+##############################################################################
+#
+#  QuantLib-Risks Benchmarks v2
+#
+#  Comprehensive benchmark comparing FD vs XAD vs Forge JIT
+#
+#  Structure:
+#  - Two jobs: Linux and Windows
+#  - Each job builds 3 versions on SAME hardware for fair comparison:
+#    1. Plain double QuantLib (for FD)
+#    2. XAD (JIT disabled) for XAD tape AAD
+#    3. XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+#
+#  Jobs:
+#  - Linux, QL + XAD + Forge:   Full benchmark suite on Linux
+#  - Windows, QL + XAD + Forge: Full benchmark suite on Windows
+#
+#  Dependencies:
+#  - QuantLib (lballabio/QuantLib)
+#  - XAD (auto-differentiation/xad)
+#  - QuantLib-Risks-Cpp (this repo)
+#  - xad-forge (da-roth/xad-forge) [Forge builds]
+#  - Forge C API (da-roth/forge) [Forge builds]
+#
+#  Copyright (C) 2025 Xcelerit Computing Limited
+#  SPDX-License-Identifier: AGPL-3.0-or-later
+#
+##############################################################################
+
+name: QL Benchmarks v2
+
+on:
+  push:
+    branches:
+      - main
+      - forge
+  pull_request:
+    branches:
+      - main
+      - forge
+  workflow_dispatch:
+
+env:
+  QL_REPO: lballabio/QuantLib
+  QL_BRANCH: master
+  XAD_REPO: auto-differentiation/xad
+  XAD_BRANCH: main
+  FORGE_REPO: da-roth/forge
+  FORGE_BRANCH: main
+  XAD_FORGE_REPO: da-roth/xad-forge
+  XAD_FORGE_BRANCH: main
+
+jobs:
+  ##############################################################################
+  # Linux, QL + XAD + Forge
+  # Comprehensive benchmark: FD (plain double) vs XAD vs Forge JIT
+  ##############################################################################
+  linux-benchmark:
+    name: Linux, QL + XAD + Forge
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/lballabio/quantlib-devenv:rolling
+
+    steps:
+      - name: Hardware Info
+        run: |
+          echo "===== CPU ====="
+          lscpu | grep -E "^(Model name|CPU\(s\)|Thread|Core|Socket|CPU max MHz)"
+          echo "===== Memory ====="
+          free -h
+          echo "===== SIMD ====="
+          cat /proc/cpuinfo | grep flags | head -1 | tr ' ' '\n' | grep -E "^(sse|avx)" | sort -u | tr '\n' ' '
+          echo ""
+
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp
+
+      - name: Setup
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.12
+        with:
+          key: linux-benchmark-v2
+          max-size: 1G
+
+      # =========================================================================
+      # Build Forge C API (needed for JIT builds)
+      # =========================================================================
+      - name: Build Forge C API
+        run: |
+          cd forge
+          cmake -B build -S api/c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFORGE_CAPI_BUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/../install
+          cmake --build build
+          cmake --install build
+
+      # =========================================================================
+      # Build 1: Plain double QuantLib (for FD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (plain double)
+        run: |
+          cd QuantLib
+          cmake -B build-double -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
+
+      - name: Build FD benchmark (plain double)
+        run: |
+          cd QuantLib/build-double
+          cmake --build . --target benchmark_fd_v2
+
+      # =========================================================================
+      # Build 2: XAD (JIT disabled) for XAD tape AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD, JIT off)
+        run: |
+          cd QuantLib
+          cmake -B build-xad -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=OFF \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build XAD benchmark (JIT off)
+        run: |
+          cd QuantLib/build-xad
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Build 3: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD + Forge)
+        run: |
+          cd QuantLib
+          cmake -B build-forge -G Ninja -DBOOST_ROOT=/usr \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DXAD_WARNINGS_PARANOID=OFF \
+            -DXAD_ENABLE_JIT=ON \
+            -DCMAKE_PREFIX_PATH=$(pwd)/../install \
+            -DQL_EXTERNAL_SUBDIRECTORIES="$(pwd)/../xad;$(pwd)/../xad-forge;$(pwd)/../QuantLib-Risks-Cpp" \
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks \
+            -DQL_NULL_AS_FUNCTIONS=ON \
+            -DQL_BUILD_TEST_SUITE=OFF \
+            -DQL_BUILD_EXAMPLES=OFF \
+            -DQL_BUILD_BENCHMARK=OFF \
+            -DQLRISKS_DISABLE_AAD=OFF \
+            -DQLRISKS_ENABLE_FORGE=ON \
+            -DQLRISKS_USE_FORGE_CAPI=ON \
+            -DXAD_FORGE_USE_CAPI=ON \
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build Forge benchmark (JIT on)
+        run: |
+          cd QuantLib/build-forge
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Run all benchmarks on same hardware
+      # =========================================================================
+      - name: Run FD Benchmark (plain double)
+        run: |
+          echo "===== FD BENCHMARK (plain double QuantLib) ====="
+          cd QuantLib/build-double
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_fd_v2 2>&1 | tee fd_results.txt
+
+      - name: Run XAD Benchmark (JIT off)
+        run: |
+          echo "===== XAD BENCHMARK (XAD tape, JIT disabled) ====="
+          cd QuantLib/build-xad
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 --xad-only 2>&1 | tee xad_results.txt
+
+      - name: Run Forge Benchmark (JIT on)
+        run: |
+          echo "===== FORGE BENCHMARK (XAD + Forge JIT) ====="
+          cd QuantLib/build-forge
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./QuantLib-Risks-Cpp/test-suite/benchmark_aad_v2 2>&1 | tee forge_results.txt
+
+      # =========================================================================
+      # Combine and display results
+      # =========================================================================
+      - name: Generate Combined Report
+        run: |
+          echo "================================================================================"
+          echo "  COMBINED BENCHMARK RESULTS"
+          echo "================================================================================"
+          echo ""
+          echo "All benchmarks ran on the same hardware for fair comparison."
+          echo ""
+          echo "FD Results (plain double):"
+          grep "^FD_" QuantLib/build-double/fd_results.txt || echo "  (no FD results)"
+          echo ""
+          echo "XAD Results (tape only):"
+          grep "^XAD_" QuantLib/build-xad/xad_results.txt || echo "  (no XAD results)"
+          echo ""
+          echo "Forge Results (JIT + JIT-AVX):"
+          grep -E "^(XAD_|JIT_|JITAVX_)" QuantLib/build-forge/forge_results.txt || echo "  (no Forge results)"
+          echo ""
+          echo "================================================================================"
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-benchmark-results
+          path: |
+            QuantLib/build-double/fd_results.txt
+            QuantLib/build-xad/xad_results.txt
+            QuantLib/build-forge/forge_results.txt
+
+  ##############################################################################
+  # Windows, QL + XAD + Forge
+  # Comprehensive benchmark: FD (plain double) vs XAD vs Forge JIT
+  ##############################################################################
+  windows-benchmark:
+    name: Windows, QL + XAD + Forge
+    runs-on: windows-2022
+
+    env:
+      VSVARSALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+    steps:
+      - name: Checkout QuantLib
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QL_REPO }}
+          ref: ${{ env.QL_BRANCH }}
+          path: QuantLib
+
+      - name: Checkout XAD
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_REPO }}
+          ref: ${{ env.XAD_BRANCH }}
+          path: xad
+
+      - name: Checkout Forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FORGE_REPO }}
+          ref: ${{ env.FORGE_BRANCH }}
+          path: forge
+
+      - name: Checkout xad-forge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XAD_FORGE_REPO }}
+          ref: ${{ env.XAD_FORGE_BRANCH }}
+          path: xad-forge
+
+      - name: Checkout QuantLib-Risks-Cpp
+        uses: actions/checkout@v4
+        with:
+          path: QuantLib-Risks-Cpp
+
+      - name: Setup
+        run: choco install -y ninja
+
+      - name: Setup Boost
+        run: |
+          $Url = "https://downloads.sourceforge.net/project/boost/boost-binaries/1.86.0/boost_1_86_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$RUNNER_TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\local\boost"
+          echo "BOOST_ROOT=C:\local\boost" >> $env:GITHUB_ENV
+
+      # =========================================================================
+      # Build Forge C API
+      # =========================================================================
+      - name: Build Forge C API
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd forge
+          cmake -B build -S api/c -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DFORGE_CAPI_BUILD_TESTS=OFF ^
+            -DFORGE_CAPI_USE_STATIC_RUNTIME=ON ^
+            -DCMAKE_INSTALL_PREFIX=%CD%\..\install
+          cmake --build build
+          cmake --install build
+
+      # =========================================================================
+      # Build 1: Plain double QuantLib (for FD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-double -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQLRISKS_BUILD_BENCHMARK_V2_FD=ON
+
+      - name: Build FD benchmark (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-double
+          cmake --build . --target benchmark_fd_v2
+
+      # =========================================================================
+      # Build 2: XAD (JIT disabled) for XAD tape AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD, JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-xad -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=OFF ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build XAD benchmark (JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-xad
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Build 3: XAD + Forge (JIT enabled) for JIT/JIT-AVX AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD + Forge)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-forge -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=ON ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DCMAKE_PREFIX_PATH=%CD%\..\install ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\xad-forge;%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_ENABLE_FORGE=ON ^
+            -DQLRISKS_USE_FORGE_CAPI=ON ^
+            -DXAD_FORGE_USE_CAPI=ON ^
+            -DQLRISKS_BUILD_BENCHMARK_V2_AAD=ON
+
+      - name: Build Forge benchmark (JIT on)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-forge
+          cmake --build . --target benchmark_aad_v2
+
+      # =========================================================================
+      # Run all benchmarks on same hardware
+      # =========================================================================
+      - name: Run FD Benchmark (plain double)
+        shell: cmd
+        run: |
+          echo ===== FD BENCHMARK (plain double QuantLib) =====
+          cd QuantLib\build-double
+          QuantLib-Risks-Cpp\test-suite\benchmark_fd_v2.exe > fd_results.txt 2>&1
+          type fd_results.txt
+
+      - name: Run XAD Benchmark (JIT off)
+        shell: cmd
+        run: |
+          echo ===== XAD BENCHMARK (XAD tape, JIT disabled) =====
+          cd QuantLib\build-xad
+          QuantLib-Risks-Cpp\test-suite\benchmark_aad_v2.exe --xad-only > xad_results.txt 2>&1
+          type xad_results.txt
+
+      - name: Run Forge Benchmark (JIT on)
+        shell: cmd
+        run: |
+          echo ===== FORGE BENCHMARK (XAD + Forge JIT) =====
+          cd QuantLib\build-forge
+          set PATH=%CD%\..\..\install\bin;%PATH%
+          QuantLib-Risks-Cpp\test-suite\benchmark_aad_v2.exe > forge_results.txt 2>&1
+          type forge_results.txt
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-benchmark-results
+          path: |
+            QuantLib/build-double/fd_results.txt
+            QuantLib/build-xad/xad_results.txt
+            QuantLib/build-forge/forge_results.txt
