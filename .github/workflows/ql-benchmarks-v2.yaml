@@ -604,6 +604,7 @@ jobs:
 
           def format_num(n):
               if n >= 1000: return f"{n:.0f}"
+              elif n >= 100: return f"{n:.1f}"
               elif n >= 10: return f"{n:.1f}"
               else: return f"{n:.2f}"
 
@@ -624,7 +625,9 @@ jobs:
               except: pass
 
           configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
-          names = {'LITE': 'Lite (1Yx1Y, 9 inputs)', 'LITE_EXTENDED': 'Lite-Extended (5Yx5Y, 14 inputs)', 'PRODUCTION': 'Production (5Yx5Y dual-curve, 45 inputs)'}
+          names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITE_EXTENDED': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT', 'JITAVX': 'JIT-AVX2'}
+          col_width = 10
 
           for config in configs:
               if config not in data: continue
@@ -643,30 +646,35 @@ jobs:
 
               method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
               present = [m for m in method_order if m in methods]
+
+              header = f"{'Paths':>6}"
+              for m in present:
+                  header += f"{method_display[m]:>{col_width}}"
               if has_fixed:
-                  print("| Paths |" + "".join(f" {m} |" for m in present) + " Setup* |")
-                  print("|------:|" + "".join("-------:|" for _ in present) + "-------:|")
-              else:
-                  print("| Paths |" + "".join(f" {m} |" for m in present))
-                  print("|------:|" + "".join("-------:|" for _ in present))
+                  header += f"{'JIT-Setup':>{col_width}}"
+              print(header)
+              print("-" * len(header))
 
               for paths in all_paths:
-                  row = f"| {format_paths(paths)} |"
+                  row = f"{format_paths(paths):>6}"
                   fixed_val = 0
                   for m in present:
                       v = methods[m].get(paths)
                       if v:
-                          row += f" {format_num(v['mean'])} |"
+                          row += f"{format_num(v['mean']):>{col_width}}"
                           if m in ['JIT', 'JITAVX'] and v.get('fixed', 0) > 0:
                               fixed_val = v['fixed']
                       else:
-                          row += " - |"
+                          row += f"{'-':>{col_width}}"
                   if has_fixed:
-                      row += f" {format_num(fixed_val)} |" if fixed_val > 0 else " - |"
+                      if fixed_val > 0:
+                          row += f"{format_num(fixed_val):>{col_width}}"
+                      else:
+                          row += f"{'-':>{col_width}}"
                   print(row)
 
-          print("\n_All times in milliseconds (ms)._")
-          print("_*Setup = one-time cost for JIT (curve bootstrap + Jacobian). Constant regardless of paths._")
+          print("\nAll times in milliseconds (ms).")
+          print("JIT-Setup = one-time cost (curve bootstrap + Jacobian). Constant regardless of paths.")
           '@
 
           $script | Out-File -FilePath format_results.py -Encoding utf8
