@@ -1,7 +1,5 @@
 option(QLRISKS_BUILD_TEST_SUITE "Build the QuantLib-Risks test suite" OFF)
 option(QLRISKS_ENABLE_FORGE_TESTS "Enable Forge JIT tests (requires Forge)" OFF)
-option(QLRISKS_BUILD_BENCHMARK "Build the QuantLib-Risks benchmark suite (Boost.Test)" OFF)
-option(QLRISKS_BUILD_BENCHMARK_STANDALONE "Build standalone benchmark executable (no Boost.Test)" OFF)
 
 set(QLRISKS_TEST_SOURCES
     americanoption_xad.cpp
