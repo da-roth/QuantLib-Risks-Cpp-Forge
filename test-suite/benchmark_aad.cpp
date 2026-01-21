@@ -293,12 +293,30 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
                 jacobian[i * numMarketQuotes + config.numDeposits + j] = derivative(swapRatesAD[j]);
         }
 
-        tape.clearAll();
+        tape.deactivate();
 
         // Extract intermediate values as plain doubles
         std::vector<double> intermediateValues(numIntermediates);
         for (Size k = 0; k < numIntermediates; ++k)
             intermediateValues[k] = value(intermediates[k]);
+
+        // Extract zero rates as plain doubles for JIT process creation
+        std::vector<Rate> zeroRates_jit;
+        for (const auto& r : zeroRates) zeroRates_jit.push_back(value(r));
+
+        // Create fresh process for JIT recording (using plain double ZeroCurve)
+        RelinkableHandle<YieldTermStructure> termStructureJit;
+        ext::shared_ptr<IborIndex> indexJit(new Euribor6M(termStructureJit));
+        indexJit->addFixing(Date(2, September, 2005), 0.04);
+        termStructureJit.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_jit, setup.dayCounter));
+
+        ext::shared_ptr<LiborForwardModelProcess> processJit(
+            new LiborForwardModelProcess(config.size, indexJit));
+        processJit->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+            new LfmCovarianceProxy(
+                ext::make_shared<LmLinearExponentialVolatilityModel>(
+                    processJit->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
 
         // =====================================================================
         // Phase 2: JIT graph recording and compilation
@@ -347,7 +365,7 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
             for (Size k = 0; k < config.size; ++k)
                 asset_arr[k] = asset[k];
 
-            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            Array evolved = processJit->evolve(t, asset_arr, dt, dw);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = evolved[k];
 
@@ -648,7 +666,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
                 jacobian[i * numMarketQuotes + col++] = derivative(oisSwapRatesAD[j]);
         }
 
-        tape.clearAll();
+        tape.deactivate();
 
         auto t_jacobian_end = Clock::now();
 
@@ -656,6 +674,24 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
         std::vector<double> intermediateValues(numIntermediates);
         for (Size k = 0; k < numIntermediates; ++k)
             intermediateValues[k] = value(intermediates[k]);
+
+        // Extract zero rates as plain doubles for JIT process creation
+        std::vector<Rate> zeroRates_jit;
+        for (const auto& r : zeroRates) zeroRates_jit.push_back(value(r));
+
+        // Create fresh process for JIT recording (using plain double ZeroCurve)
+        RelinkableHandle<YieldTermStructure> termStructureJit;
+        ext::shared_ptr<IborIndex> indexJit(new Euribor6M(termStructureJit));
+        indexJit->addFixing(Date(2, September, 2005), 0.04);
+        termStructureJit.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_jit, setup.dayCounter));
+
+        ext::shared_ptr<LiborForwardModelProcess> processJit(
+            new LiborForwardModelProcess(config.size, indexJit));
+        processJit->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+            new LfmCovarianceProxy(
+                ext::make_shared<LmLinearExponentialVolatilityModel>(
+                    processJit->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
 
         // =====================================================================
         // Phase 2: JIT graph recording and compilation
@@ -711,7 +747,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
             for (Size k = 0; k < config.size; ++k)
                 asset_arr[k] = asset[k];
 
-            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            Array evolved = processJit->evolve(t, asset_arr, dt, dw);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = evolved[k];
 
