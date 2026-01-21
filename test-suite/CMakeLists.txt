@@ -58,58 +58,58 @@ if(QL_BUILD_TEST_SUITE OR QLRISKS_BUILD_TEST_SUITE)
 endif()
 
 # =============================================================================
-# Benchmark V2 - Split FD/AAD executables for fair comparison
+# Benchmark - Split FD/AAD executables for fair comparison
 # =============================================================================
 
-# V2 FD benchmark - Finite Differences using plain double QuantLib
+# FD benchmark - Finite Differences using plain double QuantLib
 # This is built WITHOUT XAD to ensure fair FD vs AAD comparison
-option(QLRISKS_BUILD_BENCHMARK_V2_FD "Build V2 FD benchmark (plain double, no XAD)" OFF)
-if(QLRISKS_BUILD_BENCHMARK_V2_FD)
-    message(STATUS "QLRisks: Building V2 FD benchmark (plain double)")
-    add_executable(benchmark_fd_v2
-        benchmark_v2_fd.cpp
-        benchmark_v2_common.hpp
-        benchmark_v2_pricing.hpp
+option(QLRISKS_BUILD_BENCHMARK_FD "Build FD benchmark (plain double, no XAD)" OFF)
+if(QLRISKS_BUILD_BENCHMARK_FD)
+    message(STATUS "QLRisks: Building FD benchmark (plain double)")
+    add_executable(benchmark_fd
+        benchmark_fd.cpp
+        benchmark_common.hpp
+        benchmark_pricing.hpp
         PlatformInfo.hpp
     )
-    set_target_properties(benchmark_fd_v2 PROPERTIES
-        OUTPUT_NAME "benchmark-fd-v2")
-    target_link_libraries(benchmark_fd_v2 PRIVATE
+    set_target_properties(benchmark_fd PROPERTIES
+        OUTPUT_NAME "benchmark-fd")
+    target_link_libraries(benchmark_fd PRIVATE
         ql_library
         ${QL_THREAD_LIBRARIES})
 
     if (QL_INSTALL_TEST_SUITE)
-        install(TARGETS benchmark_fd_v2 RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
+        install(TARGETS benchmark_fd RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
     endif()
 endif()
 
-# V2 AAD benchmark - XAD tape-based AAD and optionally Forge JIT
+# AAD benchmark - XAD tape-based AAD and optionally Forge JIT
 # Built with XAD-enabled QuantLib, optionally links Forge for JIT benchmarks
-option(QLRISKS_BUILD_BENCHMARK_V2_AAD "Build V2 AAD benchmark (XAD tape, optionally Forge JIT)" OFF)
-if(QLRISKS_BUILD_BENCHMARK_V2_AAD)
-    message(STATUS "QLRisks: Building V2 AAD benchmark")
-    add_executable(benchmark_aad_v2
-        benchmark_v2_aad.cpp
-        benchmark_v2_common.hpp
-        benchmark_v2_pricing.hpp
+option(QLRISKS_BUILD_BENCHMARK_AAD "Build AAD benchmark (XAD tape, optionally Forge JIT)" OFF)
+if(QLRISKS_BUILD_BENCHMARK_AAD)
+    message(STATUS "QLRisks: Building AAD benchmark")
+    add_executable(benchmark_aad
+        benchmark_aad.cpp
+        benchmark_common.hpp
+        benchmark_pricing.hpp
         PlatformInfo.hpp
     )
-    set_target_properties(benchmark_aad_v2 PROPERTIES
-        OUTPUT_NAME "benchmark-aad-v2")
-    target_link_libraries(benchmark_aad_v2 PRIVATE
+    set_target_properties(benchmark_aad PROPERTIES
+        OUTPUT_NAME "benchmark-aad")
+    target_link_libraries(benchmark_aad PRIVATE
         ql_library
         ${QL_THREAD_LIBRARIES})
 
     # Link Forge if available for JIT benchmarks
     if(TARGET QLRisks::forge)
-        message(STATUS "QLRisks V2 AAD benchmark: Linking QLRisks::forge (JIT benchmarks enabled)")
-        target_link_libraries(benchmark_aad_v2 PRIVATE QLRisks::forge)
-        target_compile_definitions(benchmark_aad_v2 PRIVATE QLRISKS_HAS_FORGE=1)
+        message(STATUS "QLRisks AAD benchmark: Linking QLRisks::forge (JIT benchmarks enabled)")
+        target_link_libraries(benchmark_aad PRIVATE QLRisks::forge)
+        target_compile_definitions(benchmark_aad PRIVATE QLRISKS_HAS_FORGE=1)
     else()
-        message(STATUS "QLRisks V2 AAD benchmark: Building without Forge (XAD tape only)")
+        message(STATUS "QLRisks AAD benchmark: Building without Forge (XAD tape only)")
     endif()
 
     if (QL_INSTALL_TEST_SUITE)
-        install(TARGETS benchmark_aad_v2 RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
+        install(TARGETS benchmark_aad RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
     endif()
 endif()

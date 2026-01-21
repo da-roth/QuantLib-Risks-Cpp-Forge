@@ -1,12 +1,12 @@
 /*******************************************************************************
  *
- *  QuantLib-Risks Swaption Benchmark v2 - FD Runner
+ *  QuantLib-Risks Swaption Benchmark - FD Runner
  *
  *  Finite Differences benchmark using plain double QuantLib.
  *  This executable is compiled WITHOUT XAD to ensure fair FD comparison.
  *
  *  Usage:
- *    ./benchmark_fd_v2 [--lite|--lite-extended|--production|--all] [--quick]
+ *    ./benchmark_fd [--lite|--lite-extended|--production|--all] [--quick]
  *
  *  Output format is designed to be parsed and combined with AAD results.
  *
@@ -15,14 +15,14 @@
  *
  ******************************************************************************/
 
-#include "benchmark_v2_common.hpp"
-#include "benchmark_v2_pricing.hpp"
+#include "benchmark_common.hpp"
+#include "benchmark_pricing.hpp"
 
 #include <chrono>
 #include <cstring>
 #include <fstream>
 
-using namespace benchmark_v2;
+using namespace benchmark;
 using Clock = std::chrono::high_resolution_clock;
 using DurationMs = std::chrono::duration<double, std::milli>;
 

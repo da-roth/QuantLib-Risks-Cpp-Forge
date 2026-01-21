@@ -1,6 +1,6 @@
 /*******************************************************************************
  *
- *  QuantLib-Risks Swaption Benchmark v2 - Common Header
+ *  QuantLib-Risks Swaption Benchmark - Common Header
  *
  *  Shared utilities, configuration, and output formatting for the benchmark.
  *
@@ -9,8 +9,8 @@
  *
  ******************************************************************************/
 
-#ifndef BENCHMARK_V2_COMMON_HPP
-#define BENCHMARK_V2_COMMON_HPP
+#ifndef BENCHMARK_COMMON_HPP
+#define BENCHMARK_COMMON_HPP
 
 #include "PlatformInfo.hpp"
 
@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-namespace benchmark_v2 {
+namespace benchmark {
 
 using namespace QuantLib;
 
@@ -429,6 +429,6 @@ inline void printFooter()
     std::cout << "  All benchmarks complete.\n";
 }
 
-} // namespace benchmark_v2
+} // namespace benchmark
 
-#endif // BENCHMARK_V2_COMMON_HPP
+#endif // BENCHMARK_COMMON_HPP

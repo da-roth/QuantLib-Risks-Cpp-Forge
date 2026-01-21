@@ -1,6 +1,6 @@
 /*******************************************************************************
  *
- *  QuantLib-Risks Swaption Benchmark v2 - Templated Pricing Functions
+ *  QuantLib-Risks Swaption Benchmark - Templated Pricing Functions
  *
  *  Core pricing logic templated on the Real type (double or AReal<double>).
  *  This allows the same code to be used for both FD and AAD benchmarks.
@@ -10,10 +10,10 @@
  *
  ******************************************************************************/
 
-#ifndef BENCHMARK_V2_PRICING_HPP
-#define BENCHMARK_V2_PRICING_HPP
+#ifndef BENCHMARK_PRICING_HPP
+#define BENCHMARK_PRICING_HPP
 
-#include "benchmark_v2_common.hpp"
+#include "benchmark_common.hpp"
 
 // QuantLib includes
 #include <ql/indexes/ibor/euribor.hpp>
@@ -36,7 +36,7 @@
 #include <ql/math/randomnumbers/rngtraits.hpp>
 #include <ql/methods/montecarlo/multipathgenerator.hpp>
 
-namespace benchmark_v2 {
+namespace benchmark {
 
 // ============================================================================
 // Helper: Extract value from Real type (works for both double and AReal)
@@ -540,6 +540,6 @@ RealType priceSwaptionAuto(const BenchmarkConfig& config,
     }
 }
 
-} // namespace benchmark_v2
+} // namespace benchmark
 
-#endif // BENCHMARK_V2_PRICING_HPP
+#endif // BENCHMARK_PRICING_HPP

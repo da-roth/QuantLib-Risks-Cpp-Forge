@@ -1,12 +1,12 @@
 /*******************************************************************************
  *
- *  QuantLib-Risks Swaption Benchmark v2 - AAD Runner
+ *  QuantLib-Risks Swaption Benchmark - AAD Runner
  *
  *  AAD benchmarks using XAD tape, Forge JIT, and Forge JIT-AVX.
  *  This executable is compiled WITH XAD (and optionally Forge).
  *
  *  Usage:
- *    ./benchmark_aad_v2 [--lite|--lite-extended|--production|--all] [--quick] [--xad-only]
+ *    ./benchmark_aad [--lite|--lite-extended|--production|--all] [--quick] [--xad-only]
  *
  *  Output format is designed to be parsed and combined with FD results.
  *
@@ -15,8 +15,8 @@
  *
  ******************************************************************************/
 
-#include "benchmark_v2_common.hpp"
-#include "benchmark_v2_pricing.hpp"
+#include "benchmark_common.hpp"
+#include "benchmark_pricing.hpp"
 
 // XAD includes
 #include <XAD/XAD.hpp>
@@ -30,7 +30,7 @@
 #include <chrono>
 #include <cstring>
 
-using namespace benchmark_v2;
+using namespace benchmark;
 using Clock = std::chrono::high_resolution_clock;
 using DurationMs = std::chrono::duration<double, std::milli>;
 
