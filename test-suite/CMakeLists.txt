@@ -28,20 +28,6 @@ elseif(QLRISKS_ENABLE_FORGE_TESTS)
     message(WARNING "QLRisks test-suite: QLRISKS_ENABLE_FORGE_TESTS=ON but QLRisks::forge not available")
 endif()
 
-# Benchmark sources - Boost.Test based (requires Forge for JIT benchmarks)
-set(QLRISKS_BENCHMARK_SOURCES
-    quantlibrisks_benchmark.cpp
-    swaption_benchmark.cpp
-    utilities_xad.cpp
-)
-
-# Baseline benchmark sources - Boost.Test based (no Forge required)
-set(QLRISKS_BENCHMARK_BASELINE_SOURCES
-    quantlibrisks_benchmark.cpp
-    swaption_benchmark_baseline.cpp
-    utilities_xad.cpp
-)
-
 set(QLRISKS_TEST_HEADERS utilities_xad.hpp)
 
 if(QL_BUILD_TEST_SUITE OR QLRISKS_BUILD_TEST_SUITE)
@@ -69,74 +55,6 @@ if(QL_BUILD_TEST_SUITE OR QLRISKS_BUILD_TEST_SUITE)
         install(TARGETS QuantLib-Risks_test_suite RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
     endif()
     add_test(NAME QuantLib-Risks_test_suite COMMAND QuantLib-Risks_test_suite --log_level=message)
-endif()
-
-# Benchmark suite with Forge JIT - Boost.Test based
-# Requires Forge for JIT scalar and JIT-AVX benchmarks
-if(QLRISKS_BUILD_BENCHMARK AND TARGET QLRisks::forge)
-    message(STATUS "QLRisks: Building benchmark suite (with Forge JIT)")
-    add_executable(QuantLib-Risks_benchmark ${QLRISKS_BENCHMARK_SOURCES} ${QLRISKS_TEST_HEADERS})
-    set_target_properties(QuantLib-Risks_benchmark PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark")
-    if (NOT Boost_USE_STATIC_LIBS)
-        target_compile_definitions(QuantLib-Risks_benchmark PRIVATE BOOST_ALL_DYN_LINK)
-    endif()
-    target_link_libraries(QuantLib-Risks_benchmark PRIVATE
-        ql_library
-        QLRisks::forge
-        ${QL_THREAD_LIBRARIES})
-    target_compile_definitions(QuantLib-Risks_benchmark PRIVATE QLRISKS_HAS_FORGE=1)
-
-    if (QL_INSTALL_TEST_SUITE)
-        install(TARGETS QuantLib-Risks_benchmark RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
-    endif()
-    add_test(NAME QuantLib-Risks_benchmark COMMAND QuantLib-Risks_benchmark --log_level=message)
-elseif(QLRISKS_BUILD_BENCHMARK)
-    message(WARNING "QLRisks: QLRISKS_BUILD_BENCHMARK=ON but QLRisks::forge not available. Use QLRISKS_BUILD_BENCHMARK_BASELINE for non-Forge benchmarks.")
-endif()
-
-# Baseline benchmark suite - Boost.Test based, NO Forge required
-# Compares XAD tape-based AD only (useful for baseline measurements)
-option(QLRISKS_BUILD_BENCHMARK_BASELINE "Build baseline benchmark suite (Boost.Test, no Forge)" OFF)
-if(QLRISKS_BUILD_BENCHMARK_BASELINE)
-    message(STATUS "QLRisks: Building baseline benchmark suite (XAD tape only)")
-    add_executable(QuantLib-Risks_benchmark_baseline ${QLRISKS_BENCHMARK_BASELINE_SOURCES} ${QLRISKS_TEST_HEADERS})
-    set_target_properties(QuantLib-Risks_benchmark_baseline PROPERTIES OUTPUT_NAME "quantlib-risks-benchmark-baseline")
-    if (NOT Boost_USE_STATIC_LIBS)
-        target_compile_definitions(QuantLib-Risks_benchmark_baseline PRIVATE BOOST_ALL_DYN_LINK)
-    endif()
-    target_link_libraries(QuantLib-Risks_benchmark_baseline PRIVATE
-        ql_library
-        ${QL_THREAD_LIBRARIES})
-
-    if (QL_INSTALL_TEST_SUITE)
-        install(TARGETS QuantLib-Risks_benchmark_baseline RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
-    endif()
-    add_test(NAME QuantLib-Risks_benchmark_baseline COMMAND QuantLib-Risks_benchmark_baseline --log_level=message)
-endif()
-
-# Standalone benchmark executable - no Boost.Test dependency
-# Can be built with or without Forge
-if(QLRISKS_BUILD_BENCHMARK_STANDALONE)
-    message(STATUS "QLRisks: Building standalone benchmark executable")
-    add_executable(QuantLib-Risks_benchmark_standalone benchmark_main.cpp)
-    set_target_properties(QuantLib-Risks_benchmark_standalone PROPERTIES
-        OUTPUT_NAME "quantlib-risks-benchmark-standalone")
-    target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE
-        ql_library
-        ${QL_THREAD_LIBRARIES})
-
-    # Optionally link Forge if available
-    if(TARGET QLRisks::forge)
-        message(STATUS "QLRisks standalone benchmark: Linking QLRisks::forge")
-        target_link_libraries(QuantLib-Risks_benchmark_standalone PRIVATE QLRisks::forge)
-        target_compile_definitions(QuantLib-Risks_benchmark_standalone PRIVATE QLRISKS_HAS_FORGE=1)
-    else()
-        message(STATUS "QLRisks standalone benchmark: Building without Forge (XAD tape only)")
-    endif()
-
-    if (QL_INSTALL_TEST_SUITE)
-        install(TARGETS QuantLib-Risks_benchmark_standalone RUNTIME DESTINATION ${QL_INSTALL_BINDIR})
-    endif()
 endif()
 
 # =============================================================================
