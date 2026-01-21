@@ -261,6 +261,21 @@ jobs:
                           results[int(paths)] = {'mean': float(mean), 'fixed': fixed}
               return method, config, results
 
+          def parse_phases_line(line):
+              """Parse JIT_PHASES_CONFIG:p1,p2,p3"""
+              match = re.match(r'^JIT_PHASES_(\w+):(.+)$', line.strip())
+              if not match:
+                  return None
+              config, data = match.groups()
+              parts = data.split(',')
+              if len(parts) >= 3:
+                  return config, {
+                      'phase1': float(parts[0]),
+                      'phase2': float(parts[1]),
+                      'phase3': float(parts[2])
+                  }
+              return None
+
           def format_num(n):
               """Format number with appropriate precision"""
               if n >= 1000:
@@ -280,6 +295,7 @@ jobs:
 
           # Read all result files
           data = defaultdict(lambda: defaultdict(dict))  # data[config][method][paths] = {mean, fixed}
+          phases = {}  # phases[config] = {phase1, phase2, phase3}
 
           for filepath in sys.argv[1:]:
               try:
@@ -290,6 +306,10 @@ jobs:
                               method, config, results = result
                               for paths, vals in results.items():
                                   data[config][method][paths] = vals
+                          phase_result = parse_phases_line(line)
+                          if phase_result:
+                              config, phase_data = phase_result
+                              phases[config] = phase_data
               except FileNotFoundError:
                   pass
 
@@ -301,9 +321,9 @@ jobs:
               'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
           }
 
-          # Column display names
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT', 'JITAVX': 'JIT-AVX2'}
-          col_width = 10  # Width for each numeric column
+          # Column display names (JIT columns have asterisk to indicate setup cost)
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          col_width = 11  # Width for each numeric column
 
           for config in configs:
               if config not in data:
@@ -316,24 +336,13 @@ jobs:
               if not all_paths:
                   continue
 
-              # Check if any JIT method has fixed cost data
-              has_fixed = False
-              for m in ['JIT', 'JITAVX']:
-                  if m in methods:
-                      for p, v in methods[m].items():
-                          if v.get('fixed', 0) > 0:
-                              has_fixed = True
-                              break
-
-              # Build header
+              # Build header (no JIT-Setup column in main table)
               method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
               present_methods = [m for m in method_order if m in methods]
 
               header = f"{'Paths':>6}"
               for m in present_methods:
                   header += f"{method_display[m]:>{col_width}}"
-              if has_fixed:
-                  header += f"{'JIT-Setup':>{col_width}}"
               print(header)
 
               # Separator line
@@ -343,24 +352,29 @@ jobs:
               # Data rows
               for paths in all_paths:
                   row = f"{format_paths(paths):>6}"
-                  fixed_val = 0
                   for m in present_methods:
                       val = methods[m].get(paths)
                       if val:
                           row += f"{format_num(val['mean']):>{col_width}}"
-                          if m in ['JIT', 'JITAVX'] and val.get('fixed', 0) > 0:
-                              fixed_val = val['fixed']
-                      else:
-                          row += f"{'-':>{col_width}}"
-                  if has_fixed:
-                      if fixed_val > 0:
-                          row += f"{format_num(fixed_val):>{col_width}}"
                       else:
                           row += f"{'-':>{col_width}}"
                   print(row)
 
+              # Print JIT phase breakdown table if available
+              if config in phases:
+                  p = phases[config]
+                  total = p['phase1'] + p['phase2'] + p['phase3']
+                  print(f"\n*JIT timing breakdown (one-time costs, independent of paths):\n")
+                  print(f"  {'Phase':<35} {'Time (ms)':>10}")
+                  print(f"  {'-'*45}")
+                  print(f"  {'1. Curve bootstrap (XAD)':<35} {format_num(p['phase1']):>10}")
+                  print(f"  {'2. Jacobian (XAD adjoints)':<35} {format_num(p['phase2']):>10}")
+                  print(f"  {'3. JIT graph record + compile':<35} {format_num(p['phase3']):>10}")
+                  print(f"  {'-'*45}")
+                  print(f"  {'Total setup':<35} {format_num(total):>10}")
+
           print("\nAll times in milliseconds (ms).")
-          print("JIT-Setup = one-time cost (curve bootstrap + Jacobian). Constant regardless of paths.")
+          print("*JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
           PYEOF
 
           python3 format_results.py \
@@ -375,7 +389,7 @@ jobs:
           echo ""
           grep "^FD_" QuantLib/build-double/fd_results.txt 2>/dev/null || true
           grep "^XAD_" QuantLib/build-xad/xad_results.txt 2>/dev/null || true
-          grep -E "^(XAD_|JIT_|JITAVX_)" QuantLib/build-forge/forge_results.txt 2>/dev/null || true
+          grep -E "^(XAD_|JIT_|JITAVX_|JIT_PHASES_)" QuantLib/build-forge/forge_results.txt 2>/dev/null || true
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -602,6 +616,16 @@ jobs:
                           results[int(paths)] = {'mean': float(mean), 'fixed': fixed}
               return method, config, results
 
+          def parse_phases_line(line):
+              match = re.match(r'^JIT_PHASES_(\w+):(.+)$', line.strip())
+              if not match:
+                  return None
+              config, data = match.groups()
+              parts = data.split(',')
+              if len(parts) >= 3:
+                  return config, {'phase1': float(parts[0]), 'phase2': float(parts[1]), 'phase3': float(parts[2])}
+              return None
+
           def format_num(n):
               if n >= 1000: return f"{n:.0f}"
               elif n >= 100: return f"{n:.1f}"
@@ -613,6 +637,7 @@ jobs:
               return str(p)
 
           data = defaultdict(lambda: defaultdict(dict))
+          phases = {}
           for filepath in sys.argv[1:]:
               try:
                   with open(filepath) as f:
@@ -622,12 +647,16 @@ jobs:
                               method, config, results = result
                               for paths, vals in results.items():
                                   data[config][method][paths] = vals
+                          phase_result = parse_phases_line(line)
+                          if phase_result:
+                              config, phase_data = phase_result
+                              phases[config] = phase_data
               except: pass
 
           configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
           names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITE_EXTENDED': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT', 'JITAVX': 'JIT-AVX2'}
-          col_width = 10
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          col_width = 11
 
           for config in configs:
               if config not in data: continue
@@ -636,45 +665,39 @@ jobs:
               all_paths = sorted(set(p for m in methods.values() for p in m.keys()))
               if not all_paths: continue
 
-              has_fixed = False
-              for m in ['JIT', 'JITAVX']:
-                  if m in methods:
-                      for p, v in methods[m].items():
-                          if v.get('fixed', 0) > 0:
-                              has_fixed = True
-                              break
-
               method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
               present = [m for m in method_order if m in methods]
 
               header = f"{'Paths':>6}"
               for m in present:
                   header += f"{method_display[m]:>{col_width}}"
-              if has_fixed:
-                  header += f"{'JIT-Setup':>{col_width}}"
               print(header)
               print("-" * len(header))
 
               for paths in all_paths:
                   row = f"{format_paths(paths):>6}"
-                  fixed_val = 0
                   for m in present:
                       v = methods[m].get(paths)
                       if v:
                           row += f"{format_num(v['mean']):>{col_width}}"
-                          if m in ['JIT', 'JITAVX'] and v.get('fixed', 0) > 0:
-                              fixed_val = v['fixed']
-                      else:
-                          row += f"{'-':>{col_width}}"
-                  if has_fixed:
-                      if fixed_val > 0:
-                          row += f"{format_num(fixed_val):>{col_width}}"
                       else:
                           row += f"{'-':>{col_width}}"
                   print(row)
 
+              if config in phases:
+                  p = phases[config]
+                  total = p['phase1'] + p['phase2'] + p['phase3']
+                  print(f"\n*JIT timing breakdown (one-time costs, independent of paths):\n")
+                  print(f"  {'Phase':<35} {'Time (ms)':>10}")
+                  print(f"  {'-'*45}")
+                  print(f"  {'1. Curve bootstrap (XAD)':<35} {format_num(p['phase1']):>10}")
+                  print(f"  {'2. Jacobian (XAD adjoints)':<35} {format_num(p['phase2']):>10}")
+                  print(f"  {'3. JIT graph record + compile':<35} {format_num(p['phase3']):>10}")
+                  print(f"  {'-'*45}")
+                  print(f"  {'Total setup':<35} {format_num(total):>10}")
+
           print("\nAll times in milliseconds (ms).")
-          print("JIT-Setup = one-time cost (curve bootstrap + Jacobian). Constant regardless of paths.")
+          print("*JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
           '@
 
           $script | Out-File -FilePath format_results.py -Encoding utf8

@@ -179,9 +179,10 @@ inline void applyChainRule(const double* __restrict jacobian,
 // Forge JIT Scalar Benchmark (Single-Curve)
 // ============================================================================
 
-void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
-                     Size nrTrails, size_t warmup, size_t bench,
-                     double& mean, double& stddev)
+template <typename BackendType>
+void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
+                         Size nrTrails, size_t warmup, size_t bench,
+                         double& mean, double& stddev)
 {
     std::vector<double> times;
 
@@ -192,6 +193,9 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
     {
         auto t_start = Clock::now();
 
+        // =====================================================================
+        // Phase 1: XAD tape - curve bootstrap and Jacobian computation
+        // =====================================================================
         tape_type tape;
 
         // Register inputs
@@ -276,7 +280,7 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         // Register intermediates as outputs
         tape.registerOutputs(intermediates);
 
-        // Compute Jacobian
+        // Compute Jacobian: d(intermediates) / d(market inputs)
         std::vector<double> jacobian(numIntermediates * numMarketQuotes);
         for (Size i = 0; i < numIntermediates; ++i)
         {
@@ -291,47 +295,135 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
         tape.clearAll();
 
-        // Run JIT for MC paths
+        // Extract intermediate values as plain doubles
         std::vector<double> intermediateValues(numIntermediates);
         for (Size k = 0; k < numIntermediates; ++k)
             intermediateValues[k] = value(intermediates[k]);
 
-        using JITBackend = xad::forge::ForgeBackend<double>;
-        JITBackend backend;
+        // =====================================================================
+        // Phase 2: JIT graph recording and compilation
+        // =====================================================================
+        auto backend = std::make_unique<BackendType>();
+        xad::JITCompiler<double> jit(std::move(backend));
 
-        std::vector<double> initRatesD(config.size);
+        // Register JIT inputs: forward rates, swap rate, and randoms
+        std::vector<xad::AD> jit_initRates(config.size);
+        xad::AD jit_swapRate;
+        std::vector<xad::AD> jit_randoms(setup.fullGridRandoms);
+
         for (Size k = 0; k < config.size; ++k)
-            initRatesD[k] = intermediateValues[k];
-        double swapRateD = intermediateValues[config.size];
+        {
+            jit_initRates[k] = xad::AD(intermediateValues[k]);
+            jit.registerInput(jit_initRates[k]);
+        }
+        jit_swapRate = xad::AD(intermediateValues[config.size]);
+        jit.registerInput(jit_swapRate);
 
-        // JIT-compiled MC pricing
-        std::vector<double> jitDerivatives(numIntermediates, 0.0);
+        for (Size m = 0; m < setup.fullGridRandoms; ++m)
+        {
+            jit_randoms[m] = xad::AD(0.0);
+            jit.registerInput(jit_randoms[m]);
+        }
+
+        jit.newRecording();
+
+        // Record path evolution
+        std::vector<xad::AD> asset(config.size);
+        std::vector<xad::AD> assetAtExercise(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = jit_initRates[k];
+
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = jit_randoms[offset + f];
+
+            Array asset_arr(config.size);
+            for (Size k = 0; k < config.size; ++k)
+                asset_arr[k] = asset[k];
+
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = evolved[k];
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // Compute payoff: discount factors and NPV
+        std::vector<xad::AD> dis(config.size);
+        xad::AD df = xad::AD(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (xad::AD(1.0) + assetAtExercise[k] * accrual);
+            dis[k] = df;
+        }
+
+        xad::AD npv = xad::AD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv = npv + (jit_swapRate - assetAtExercise[m]) * accrual * dis[m];
+        }
+
+        // Payoff = max(npv, 0)
+        xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
+        jit.registerOutput(payoff);
+
+        // Compile the JIT kernel
+        jit.compile();
+
+        // =====================================================================
+        // Phase 3: Execute JIT kernel for all MC paths
+        // =====================================================================
+        const auto& graph = jit.getGraph();
+
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
 
         for (Size n = 0; n < nrTrails; ++n)
         {
-            std::vector<double> asset = initRatesD;
-            std::vector<double> assetAtExercise(config.size);
+            // Set inputs
+            for (Size k = 0; k < config.size; ++k)
+                value(jit_initRates[k]) = intermediateValues[k];
+            value(jit_swapRate) = intermediateValues[config.size];
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+                value(jit_randoms[m]) = setup.allRandoms[n][m];
 
-            for (Size step = 1; step <= setup.fullGridSteps; ++step)
-            {
-                Size offset = (step - 1) * setup.numFactors;
-                // Simplified evolution (full implementation would use process->evolve)
-                for (Size k = 0; k < config.size; ++k)
-                {
-                    asset[k] *= (1.0 + 0.01 * setup.allRandoms[n][offset + (k % setup.numFactors)]);
-                }
-                if (step == setup.exerciseStep)
-                    assetAtExercise = asset;
-            }
+            // Execute forward + backward
+            double payoff_value;
+            jit.forward(&payoff_value);
+            mcPrice += payoff_value;
 
-            // Simplified payoff derivative computation
-            for (Size k = 0; k < numIntermediates; ++k)
-                jitDerivatives[k] += 0.001;  // Placeholder
+            // Accumulate gradients w.r.t. intermediates
+            jit.clearDerivatives();
+            jit.setDerivative(graph.output_ids[0], 1.0);
+            jit.computeAdjoints();
+
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[k] += jit.derivative(graph.input_ids[k]);
+            dPrice_dIntermediates[config.size] += jit.derivative(graph.input_ids[config.size]);
         }
 
-        // Apply chain rule
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+        // =====================================================================
+        // Phase 4: Apply chain rule to get market sensitivities
+        // =====================================================================
         std::vector<double> finalDerivatives(numMarketQuotes);
-        applyChainRule(jacobian.data(), jitDerivatives.data(), finalDerivatives.data(),
+        applyChainRule(jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
                        numIntermediates, numMarketQuotes);
 
         auto t_end = Clock::now();
@@ -342,39 +434,48 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         }
 
         (void)finalDerivatives;
-        (void)swapRateD;
+        (void)mcPrice;
     }
 
     mean = computeMean(times);
     stddev = computeStddev(times);
 }
 
+void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
+                     Size nrTrails, size_t warmup, size_t bench,
+                     double& mean, double& stddev)
+{
+    runJITBenchmarkImpl<xad::forge::ForgeBackend<double>>(
+        config, setup, nrTrails, warmup, bench, mean, stddev);
+}
+
 // ============================================================================
-// Forge JIT-AVX Benchmark (placeholder - full impl in original benchmark)
+// Forge JIT-AVX Benchmark (Single-Curve)
 // ============================================================================
 
 void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                         Size nrTrails, size_t warmup, size_t bench,
                         double& mean, double& stddev)
 {
-    // For now, use similar timing as JIT (full implementation in production)
-    runJITBenchmark(config, setup, nrTrails, warmup, bench, mean, stddev);
-    // JIT-AVX typically 2-4x faster, but this is a placeholder
-    mean *= 0.4;  // Approximate speedup
+    runJITBenchmarkImpl<xad::forge::ForgeBackendAVX<double>>(
+        config, setup, nrTrails, warmup, bench, mean, stddev);
 }
 
 // ============================================================================
-// Forge JIT Scalar Benchmark (Dual-Curve)
+// Forge JIT Benchmark (Dual-Curve) - Template Implementation
 // ============================================================================
 
-void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
-                               Size nrTrails, size_t warmup, size_t bench,
-                               double& mean, double& stddev,
-                               double& curve_mean, double& jacobian_mean)
+template <typename BackendType>
+void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup& setup,
+                                   Size nrTrails, size_t warmup, size_t bench,
+                                   double& mean, double& stddev,
+                                   double& phase1_curve_mean, double& phase2_jacobian_mean,
+                                   double& phase3_compile_mean)
 {
     std::vector<double> times;
-    std::vector<double> curve_times;
-    std::vector<double> jacobian_times;
+    std::vector<double> phase1_times;  // Curve bootstrap
+    std::vector<double> phase2_times;  // Jacobian computation
+    std::vector<double> phase3_times;  // JIT record + compile
 
     Size numMarketQuotes = config.numMarketQuotes();
     // Intermediates: forward rates + swap rate + OIS discount factors
@@ -384,6 +485,9 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
     {
         auto t_start = Clock::now();
 
+        // =====================================================================
+        // Phase 1: XAD tape - dual-curve bootstrap
+        // =====================================================================
         tape_type tape;
 
         // Register forecasting curve inputs
@@ -520,10 +624,10 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 
         auto t_curve_end = Clock::now();
 
-        // Compute Jacobian: d(intermediates) / d(all market inputs)
-        // Input order: depositRates, swapRates, oisDepoRates, oisSwapRates
+        // =====================================================================
+        // Phase 1b: Compute Jacobian via XAD adjoints
+        // =====================================================================
         std::vector<double> jacobian(numIntermediates * numMarketQuotes);
-        Size forecastingQuotes = config.numForecastingQuotes();
 
         for (Size i = 0; i < numIntermediates; ++i)
         {
@@ -548,46 +652,152 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 
         auto t_jacobian_end = Clock::now();
 
-        // Run JIT for MC paths
+        // Extract intermediate values as plain doubles
         std::vector<double> intermediateValues(numIntermediates);
         for (Size k = 0; k < numIntermediates; ++k)
             intermediateValues[k] = value(intermediates[k]);
 
-        using JITBackend = xad::forge::ForgeBackend<double>;
-        JITBackend backend;
+        // =====================================================================
+        // Phase 2: JIT graph recording and compilation
+        // =====================================================================
+        auto backend = std::make_unique<BackendType>();
+        xad::JITCompiler<double> jit(std::move(backend));
 
-        std::vector<double> initRatesD(config.size);
+        // Register JIT inputs: forward rates, swap rate, OIS discount factors, and randoms
+        std::vector<xad::AD> jit_initRates(config.size);
+        xad::AD jit_swapRate;
+        std::vector<xad::AD> jit_oisDiscounts(config.size);
+        std::vector<xad::AD> jit_randoms(setup.fullGridRandoms);
+
         for (Size k = 0; k < config.size; ++k)
-            initRatesD[k] = intermediateValues[k];
-        double swapRateD = intermediateValues[config.size];
+        {
+            jit_initRates[k] = xad::AD(intermediateValues[k]);
+            jit.registerInput(jit_initRates[k]);
+        }
+        jit_swapRate = xad::AD(intermediateValues[config.size]);
+        jit.registerInput(jit_swapRate);
 
-        // JIT-compiled MC pricing (simplified - measures JIT overhead)
-        std::vector<double> jitDerivatives(numIntermediates, 0.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            jit_oisDiscounts[k] = xad::AD(intermediateValues[config.size + 1 + k]);
+            jit.registerInput(jit_oisDiscounts[k]);
+        }
+
+        for (Size m = 0; m < setup.fullGridRandoms; ++m)
+        {
+            jit_randoms[m] = xad::AD(0.0);
+            jit.registerInput(jit_randoms[m]);
+        }
+
+        jit.newRecording();
+
+        // Record path evolution
+        std::vector<xad::AD> asset(config.size);
+        std::vector<xad::AD> assetAtExercise(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = jit_initRates[k];
+
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = jit_randoms[offset + f];
+
+            Array asset_arr(config.size);
+            for (Size k = 0; k < config.size; ++k)
+                asset_arr[k] = asset[k];
+
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = evolved[k];
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // Compute payoff using OIS discount factors for discounting
+        std::vector<xad::AD> dis(config.size);
+        xad::AD df = xad::AD(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (xad::AD(1.0) + assetAtExercise[k] * accrual);
+            // Use OIS discount factors for dual-curve discounting
+            dis[k] = jit_oisDiscounts[k];
+        }
+
+        xad::AD npv = xad::AD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv = npv + (jit_swapRate - assetAtExercise[m]) * accrual * dis[m];
+        }
+
+        // Payoff = max(npv, 0)
+        xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
+        jit.registerOutput(payoff);
+
+        // Compile the JIT kernel
+        jit.compile();
+
+        auto t_compile_end = Clock::now();
+
+        // =====================================================================
+        // Phase 4: Execute JIT kernel for all MC paths
+        // =====================================================================
+        const auto& graph = jit.getGraph();
+
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
 
         for (Size n = 0; n < nrTrails; ++n)
         {
-            std::vector<double> asset = initRatesD;
-            std::vector<double> assetAtExercise(config.size);
+            // Set inputs
+            for (Size k = 0; k < config.size; ++k)
+                value(jit_initRates[k]) = intermediateValues[k];
+            value(jit_swapRate) = intermediateValues[config.size];
+            for (Size k = 0; k < config.size; ++k)
+                value(jit_oisDiscounts[k]) = intermediateValues[config.size + 1 + k];
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+                value(jit_randoms[m]) = setup.allRandoms[n][m];
 
-            for (Size step = 1; step <= setup.fullGridSteps; ++step)
-            {
-                Size offset = (step - 1) * setup.numFactors;
-                for (Size k = 0; k < config.size; ++k)
-                {
-                    asset[k] *= (1.0 + 0.01 * setup.allRandoms[n][offset + (k % setup.numFactors)]);
-                }
-                if (step == setup.exerciseStep)
-                    assetAtExercise = asset;
-            }
+            // Execute forward
+            double payoff_value;
+            jit.forward(&payoff_value);
+            mcPrice += payoff_value;
 
-            // Simplified payoff derivative computation
-            for (Size k = 0; k < numIntermediates; ++k)
-                jitDerivatives[k] += 0.001;  // Placeholder
+            // Accumulate gradients w.r.t. intermediates
+            jit.clearDerivatives();
+            jit.setDerivative(graph.output_ids[0], 1.0);
+            jit.computeAdjoints();
+
+            // Forward rates
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[k] += jit.derivative(graph.input_ids[k]);
+            // Swap rate
+            dPrice_dIntermediates[config.size] += jit.derivative(graph.input_ids[config.size]);
+            // OIS discount factors
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[config.size + 1 + k] += jit.derivative(graph.input_ids[config.size + 1 + k]);
         }
 
-        // Apply chain rule
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+        // =====================================================================
+        // Phase 5: Apply chain rule to get market sensitivities
+        // =====================================================================
         std::vector<double> finalDerivatives(numMarketQuotes);
-        applyChainRule(jacobian.data(), jitDerivatives.data(), finalDerivatives.data(),
+        applyChainRule(jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
                        numIntermediates, numMarketQuotes);
 
         auto t_end = Clock::now();
@@ -595,19 +805,31 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
         if (iter >= warmup)
         {
             times.push_back(DurationMs(t_end - t_start).count());
-            curve_times.push_back(DurationMs(t_curve_end - t_start).count());
-            jacobian_times.push_back(DurationMs(t_jacobian_end - t_curve_end).count());
+            phase1_times.push_back(DurationMs(t_curve_end - t_start).count());
+            phase2_times.push_back(DurationMs(t_jacobian_end - t_curve_end).count());
+            phase3_times.push_back(DurationMs(t_compile_end - t_jacobian_end).count());
         }
 
         (void)finalDerivatives;
-        (void)swapRateD;
-        (void)forecastingQuotes;
+        (void)mcPrice;
     }
 
     mean = computeMean(times);
     stddev = computeStddev(times);
-    curve_mean = computeMean(curve_times);
-    jacobian_mean = computeMean(jacobian_times);
+    phase1_curve_mean = computeMean(phase1_times);
+    phase2_jacobian_mean = computeMean(phase2_times);
+    phase3_compile_mean = computeMean(phase3_times);
+}
+
+void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
+                               Size nrTrails, size_t warmup, size_t bench,
+                               double& mean, double& stddev,
+                               double& phase1_curve_mean, double& phase2_jacobian_mean,
+                               double& phase3_compile_mean)
+{
+    runJITBenchmarkDualCurveImpl<xad::forge::ForgeBackend<double>>(
+        config, setup, nrTrails, warmup, bench, mean, stddev,
+        phase1_curve_mean, phase2_jacobian_mean, phase3_compile_mean);
 }
 
 // ============================================================================
@@ -617,16 +839,12 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
                                   Size nrTrails, size_t warmup, size_t bench,
                                   double& mean, double& stddev,
-                                  double& curve_mean, double& jacobian_mean)
+                                  double& phase1_curve_mean, double& phase2_jacobian_mean,
+                                  double& phase3_compile_mean)
 {
-    // For now, use similar timing as JIT dual-curve
-    runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench, mean, stddev,
-                              curve_mean, jacobian_mean);
-    // JIT-AVX typically 2-4x faster for the MC portion, but fixed costs remain the same
-    // Approximate the speedup on the variable portion only
-    double fixed_cost = curve_mean + jacobian_mean;
-    double variable_cost = mean - fixed_cost;
-    mean = fixed_cost + variable_cost * 0.4;  // Only variable portion speeds up
+    runJITBenchmarkDualCurveImpl<xad::forge::ForgeBackendAVX<double>>(
+        config, setup, nrTrails, warmup, bench, mean, stddev,
+        phase1_curve_mean, phase2_jacobian_mean, phase3_compile_mean);
 }
 
 #endif // QLRISKS_HAS_FORGE
@@ -751,22 +969,24 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
         if (!xadOnly)
         {
             // Forge JIT (dual-curve)
-            double jit_curve_mean = 0, jit_jacobian_mean = 0;
+            double jit_p1 = 0, jit_p2 = 0, jit_p3 = 0;
             runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                       result.jit_mean, result.jit_std,
-                                      jit_curve_mean, jit_jacobian_mean);
+                                      jit_p1, jit_p2, jit_p3);
             result.jit_enabled = true;
-            result.jit_curve_mean = jit_curve_mean;
-            result.jit_jacobian_mean = jit_jacobian_mean;
-            result.jit_fixed_mean = jit_curve_mean + jit_jacobian_mean;
+            result.jit_phase1_curve_mean = jit_p1;
+            result.jit_phase2_jacobian_mean = jit_p2;
+            result.jit_phase3_compile_mean = jit_p3;
+            result.jit_fixed_mean = jit_p1 + jit_p2 + jit_p3;
             std::cout << "JIT=" << result.jit_mean << "ms ";
 
             // Forge JIT-AVX (dual-curve)
-            double avx_curve_mean = 0, avx_jacobian_mean = 0;
+            double avx_p1 = 0, avx_p2 = 0, avx_p3 = 0;
             runJITAVXBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                          result.jit_avx_mean, result.jit_avx_std,
-                                         avx_curve_mean, avx_jacobian_mean);
+                                         avx_p1, avx_p2, avx_p3);
             result.jit_avx_enabled = true;
+            // Note: AVX uses same setup phases, so we just use JIT's phase timings
             std::cout << "JIT-AVX=" << result.jit_avx_mean << "ms";
         }
 #else
@@ -823,6 +1043,20 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
                   << "," << r.jit_fixed_mean;  // Same fixed cost as JIT
     }
     std::cout << std::endl;
+
+    // JIT phase breakdown (one-time costs: phase1_curve, phase2_jacobian, phase3_compile)
+    // Output from first result that has JIT enabled (phases are same for all path counts)
+    for (const auto& r : results)
+    {
+        if (r.jit_enabled)
+        {
+            std::cout << "JIT_PHASES_" << configId << ":"
+                      << r.jit_phase1_curve_mean << ","
+                      << r.jit_phase2_jacobian_mean << ","
+                      << r.jit_phase3_compile_mean << std::endl;
+            break;
+        }
+    }
 #endif
 }
 

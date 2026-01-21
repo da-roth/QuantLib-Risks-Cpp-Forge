@@ -213,10 +213,17 @@ struct TimingResult
     bool jit_enabled = false;
     bool jit_avx_enabled = false;
 
-    // JIT decomposition (fixed costs that don't scale with paths)
-    double jit_curve_mean = 0;      // Curve building time
-    double jit_jacobian_mean = 0;   // Jacobian computation time
-    double jit_fixed_mean = 0;      // Total fixed cost (curve + jacobian)
+    // JIT phase decomposition (for understanding where time is spent)
+    // Phase 1: Curve bootstrap (XAD tape forward pass)
+    double jit_phase1_curve_mean = 0;
+    // Phase 2: Jacobian computation (XAD adjoint passes)
+    double jit_phase2_jacobian_mean = 0;
+    // Phase 3: JIT graph recording + kernel compilation
+    double jit_phase3_compile_mean = 0;
+    // Phase 4: MC execution loop (scales with paths) - computed as total - phases 1-3
+
+    // Legacy: total fixed cost (phases 1-3, doesn't scale with paths)
+    double jit_fixed_mean = 0;
 };
 
 // ============================================================================
