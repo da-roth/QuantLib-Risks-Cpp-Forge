@@ -446,15 +446,304 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 }
 
 // ============================================================================
-// Forge JIT-AVX Benchmark (Single-Curve)
+// Forge JIT-AVX Benchmark (Single-Curve) - Batched Execution
 // ============================================================================
 
 void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                         Size nrTrails, size_t warmup, size_t bench,
                         double& mean, double& stddev)
 {
-    runJITBenchmarkImpl<xad::forge::ForgeBackendAVX<double>>(
-        config, setup, nrTrails, warmup, bench, mean, stddev);
+    std::vector<double> times;
+
+    Size numMarketQuotes = config.numMarketQuotes();
+    Size numIntermediates = config.size + 1;  // forward rates + swap rate
+
+    for (size_t iter = 0; iter < warmup + bench; ++iter)
+    {
+        auto t_start = Clock::now();
+
+        // =====================================================================
+        // Phase 1: XAD tape - curve bootstrap and Jacobian computation
+        // =====================================================================
+        tape_type tape;
+
+        // Register inputs
+        std::vector<RealAD> depositRates(config.numDeposits);
+        std::vector<RealAD> swapRatesAD(config.numSwaps);
+        for (Size idx = 0; idx < config.numDeposits; ++idx)
+            depositRates[idx] = config.depoRates[idx];
+        for (Size idx = 0; idx < config.numSwaps; ++idx)
+            swapRatesAD[idx] = config.swapRates[idx];
+
+        tape.registerInputs(depositRates);
+        tape.registerInputs(swapRatesAD);
+        tape.newRecording();
+
+        // Build curve and get intermediates
+        RelinkableHandle<YieldTermStructure> euriborTS;
+        auto euribor6m = ext::make_shared<Euribor6M>(euriborTS);
+        euribor6m->addFixing(Date(2, September, 2005), 0.04);
+
+        std::vector<ext::shared_ptr<RateHelper>> instruments;
+        for (Size idx = 0; idx < config.numDeposits; ++idx)
+        {
+            auto depoQuote = ext::make_shared<SimpleQuote>(depositRates[idx]);
+            instruments.push_back(ext::make_shared<DepositRateHelper>(
+                Handle<Quote>(depoQuote), config.depoTenors[idx], setup.fixingDays,
+                setup.calendar, ModifiedFollowing, true, setup.dayCounter));
+        }
+        for (Size idx = 0; idx < config.numSwaps; ++idx)
+        {
+            auto swapQuote = ext::make_shared<SimpleQuote>(swapRatesAD[idx]);
+            instruments.push_back(ext::make_shared<SwapRateHelper>(
+                Handle<Quote>(swapQuote), config.swapTenors[idx],
+                setup.calendar, Annual, Unadjusted, Thirty360(Thirty360::BondBasis),
+                euribor6m));
+        }
+
+        auto yieldCurve = ext::make_shared<PiecewiseYieldCurve<ZeroYield, Linear>>(
+            setup.settlementDate, instruments, setup.dayCounter);
+        yieldCurve->enableExtrapolation();
+
+        // Extract zero rates
+        std::vector<Date> curveDates;
+        std::vector<RealAD> zeroRates;
+        curveDates.push_back(setup.settlementDate);
+        zeroRates.push_back(yieldCurve->zeroRate(setup.settlementDate, setup.dayCounter, Continuous).rate());
+        Date endDate = setup.settlementDate + config.curveEndYears * Years;
+        curveDates.push_back(endDate);
+        zeroRates.push_back(yieldCurve->zeroRate(endDate, setup.dayCounter, Continuous).rate());
+
+        std::vector<Rate> zeroRates_ql;
+        for (const auto& r : zeroRates) zeroRates_ql.push_back(r);
+
+        // Build LMM process
+        RelinkableHandle<YieldTermStructure> termStructure;
+        ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+        index->addFixing(Date(2, September, 2005), 0.04);
+        termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_ql, setup.dayCounter));
+
+        ext::shared_ptr<LiborForwardModelProcess> process(
+            new LiborForwardModelProcess(config.size, index));
+        process->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+            new LfmCovarianceProxy(
+                ext::make_shared<LmLinearExponentialVolatilityModel>(
+                    process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
+
+        ext::shared_ptr<VanillaSwap> fwdSwap(
+            new VanillaSwap(Swap::Receiver, 1.0,
+                            setup.schedule, 0.05, setup.dayCounter,
+                            setup.schedule, index, 0.0, index->dayCounter()));
+        fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+            index->forwardingTermStructure()));
+        RealAD swapRate = fwdSwap->fairRate();
+
+        // Extract intermediates (forward rates + swap rate)
+        Array initRates = process->initialValues();
+        std::vector<RealAD> intermediates(numIntermediates);
+        for (Size k = 0; k < config.size; ++k)
+            intermediates[k] = initRates[k];
+        intermediates[config.size] = swapRate;
+
+        // Register intermediates as outputs
+        tape.registerOutputs(intermediates);
+
+        // Compute Jacobian: d(intermediates) / d(market inputs)
+        std::vector<double> jacobian(numIntermediates * numMarketQuotes);
+        for (Size i = 0; i < numIntermediates; ++i)
+        {
+            tape.clearDerivatives();
+            derivative(intermediates[i]) = 1.0;
+            tape.computeAdjoints();
+            for (Size j = 0; j < config.numDeposits; ++j)
+                jacobian[i * numMarketQuotes + j] = derivative(depositRates[j]);
+            for (Size j = 0; j < config.numSwaps; ++j)
+                jacobian[i * numMarketQuotes + config.numDeposits + j] = derivative(swapRatesAD[j]);
+        }
+
+        tape.deactivate();
+
+        // =====================================================================
+        // Phase 2: JIT graph recording (using JITCompiler to record only)
+        // =====================================================================
+        xad::JITCompiler<double> jit;  // Default interpreter - just for recording
+
+        // Register JIT inputs: forward rates, swap rate, and randoms
+        std::vector<xad::AD> jit_initRates(config.size);
+        xad::AD jit_swapRate;
+        std::vector<xad::AD> jit_randoms(setup.fullGridRandoms);
+
+        for (Size k = 0; k < config.size; ++k)
+        {
+            jit_initRates[k] = xad::AD(value(initRates[k]));
+            jit.registerInput(jit_initRates[k]);
+        }
+        jit_swapRate = xad::AD(value(swapRate));
+        jit.registerInput(jit_swapRate);
+
+        for (Size m = 0; m < setup.fullGridRandoms; ++m)
+        {
+            jit_randoms[m] = xad::AD(0.0);
+            jit.registerInput(jit_randoms[m]);
+        }
+
+        jit.newRecording();
+
+        // Record path evolution
+        std::vector<xad::AD> asset(config.size);
+        std::vector<xad::AD> assetAtExercise(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = jit_initRates[k];
+
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = jit_randoms[offset + f];
+
+            Array asset_arr(config.size);
+            for (Size k = 0; k < config.size; ++k)
+                asset_arr[k] = asset[k];
+
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = evolved[k];
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // Compute payoff: discount factors and NPV
+        std::vector<xad::AD> dis(config.size);
+        xad::AD df = xad::AD(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (xad::AD(1.0) + assetAtExercise[k] * accrual);
+            dis[k] = df;
+        }
+
+        xad::AD npv = xad::AD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv = npv + (jit_swapRate - assetAtExercise[m]) * accrual * dis[m];
+        }
+
+        // Payoff = max(npv, 0)
+        xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
+        jit.registerOutput(payoff);
+
+        // Get the JIT graph and deactivate
+        const auto& jitGraph = jit.getGraph();
+        jit.deactivate();
+
+        // =====================================================================
+        // Phase 3: AVX backend compilation and batched execution
+        // =====================================================================
+        xad::forge::ForgeBackendAVX<double> avxBackend(false);
+        avxBackend.compile(jitGraph);
+
+        constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX<double>::VECTOR_WIDTH;
+        Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
+
+        std::vector<double> inputBatch(BATCH_SIZE);
+        std::vector<double> outputBatch(BATCH_SIZE);
+
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
+
+        // Number of inputs: forward rates + swap rate + randoms
+        std::size_t numInputs = config.size + 1 + setup.fullGridRandoms;
+        std::vector<double> inputGradients(numInputs * BATCH_SIZE);
+
+        for (Size batch = 0; batch < numBatches; ++batch)
+        {
+            Size batchStart = batch * BATCH_SIZE;
+            Size actualBatchSize = std::min(static_cast<Size>(BATCH_SIZE), nrTrails - batchStart);
+
+            // Set initRates (same for all paths in batch)
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                    inputBatch[lane] = value(initRates[k]);
+                avxBackend.setInput(k, inputBatch.data());
+            }
+
+            // Set swapRate (same for all paths in batch)
+            for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                inputBatch[lane] = value(swapRate);
+            avxBackend.setInput(config.size, inputBatch.data());
+
+            // Set random numbers (different for each path in batch)
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+            {
+                for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                {
+                    Size pathIdx = batchStart + lane;
+                    inputBatch[lane] = (pathIdx < nrTrails) ? setup.allRandoms[pathIdx][m] : 0.0;
+                }
+                avxBackend.setInput(config.size + 1 + m, inputBatch.data());
+            }
+
+            // Execute forward + backward in one call
+            avxBackend.forwardAndBackward(outputBatch.data(), inputGradients.data());
+
+            // Accumulate MC price
+            for (Size lane = 0; lane < actualBatchSize; ++lane)
+            {
+                mcPrice += outputBatch[lane];
+            }
+
+            // Accumulate gradients for initRates
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (Size lane = 0; lane < actualBatchSize; ++lane)
+                {
+                    dPrice_dIntermediates[k] += inputGradients[k * BATCH_SIZE + lane];
+                }
+            }
+
+            // Accumulate gradient for swap rate
+            for (Size lane = 0; lane < actualBatchSize; ++lane)
+            {
+                dPrice_dIntermediates[config.size] += inputGradients[config.size * BATCH_SIZE + lane];
+            }
+        }
+
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+        // =====================================================================
+        // Phase 4: Apply chain rule to get market sensitivities
+        // =====================================================================
+        std::vector<double> finalDerivatives(numMarketQuotes);
+        applyChainRule(jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
+                       numIntermediates, numMarketQuotes);
+
+        auto t_end = Clock::now();
+
+        if (iter >= warmup)
+        {
+            times.push_back(DurationMs(t_end - t_start).count());
+        }
+
+        (void)finalDerivatives;
+        (void)mcPrice;
+    }
+
+    mean = computeMean(times);
+    stddev = computeStddev(times);
 }
 
 // ============================================================================
@@ -825,7 +1114,7 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
 }
 
 // ============================================================================
-// Forge JIT-AVX Benchmark (Dual-Curve)
+// Forge JIT-AVX Benchmark (Dual-Curve) - Batched Execution
 // ============================================================================
 
 void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
@@ -834,9 +1123,400 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
                                   double& phase1_curve_mean, double& phase2_jacobian_mean,
                                   double& phase3_compile_mean)
 {
-    runJITBenchmarkDualCurveImpl<xad::forge::ForgeBackendAVX<double>>(
-        config, setup, nrTrails, warmup, bench, mean, stddev,
-        phase1_curve_mean, phase2_jacobian_mean, phase3_compile_mean);
+    std::vector<double> times;
+    std::vector<double> phase1_times;  // Curve bootstrap
+    std::vector<double> phase2_times;  // Jacobian computation
+    std::vector<double> phase3_times;  // JIT record + compile
+
+    Size numMarketQuotes = config.numMarketQuotes();
+    // Intermediates: forward rates + swap rate + OIS discount factors
+    Size numIntermediates = config.size + 1 + config.size;  // 2*size + 1
+
+    for (size_t iter = 0; iter < warmup + bench; ++iter)
+    {
+        auto t_start = Clock::now();
+
+        // =====================================================================
+        // Phase 1: XAD tape - dual-curve bootstrap
+        // =====================================================================
+        tape_type tape;
+
+        // Register forecasting curve inputs
+        std::vector<RealAD> depositRates(config.numDeposits);
+        std::vector<RealAD> swapRatesAD(config.numSwaps);
+        for (Size idx = 0; idx < config.numDeposits; ++idx)
+            depositRates[idx] = config.depoRates[idx];
+        for (Size idx = 0; idx < config.numSwaps; ++idx)
+            swapRatesAD[idx] = config.swapRates[idx];
+
+        // Register discounting curve inputs (OIS)
+        std::vector<RealAD> oisDepoRates(config.numOisDeposits);
+        std::vector<RealAD> oisSwapRatesAD(config.numOisSwaps);
+        for (Size idx = 0; idx < config.numOisDeposits; ++idx)
+            oisDepoRates[idx] = config.oisDepoRates[idx];
+        for (Size idx = 0; idx < config.numOisSwaps; ++idx)
+            oisSwapRatesAD[idx] = config.oisSwapRates[idx];
+
+        tape.registerInputs(depositRates);
+        tape.registerInputs(swapRatesAD);
+        tape.registerInputs(oisDepoRates);
+        tape.registerInputs(oisSwapRatesAD);
+        tape.newRecording();
+
+        // Build FORECASTING curve (Euribor deposits + swaps)
+        RelinkableHandle<YieldTermStructure> euriborTS;
+        auto euribor6m = ext::make_shared<Euribor6M>(euriborTS);
+        euribor6m->addFixing(Date(2, September, 2005), 0.04);
+
+        std::vector<ext::shared_ptr<RateHelper>> forecastingInstruments;
+        for (Size idx = 0; idx < config.numDeposits; ++idx)
+        {
+            auto depoQuote = ext::make_shared<SimpleQuote>(depositRates[idx]);
+            forecastingInstruments.push_back(ext::make_shared<DepositRateHelper>(
+                Handle<Quote>(depoQuote), config.depoTenors[idx], setup.fixingDays,
+                setup.calendar, ModifiedFollowing, true, setup.dayCounter));
+        }
+        for (Size idx = 0; idx < config.numSwaps; ++idx)
+        {
+            auto swapQuote = ext::make_shared<SimpleQuote>(swapRatesAD[idx]);
+            forecastingInstruments.push_back(ext::make_shared<SwapRateHelper>(
+                Handle<Quote>(swapQuote), config.swapTenors[idx],
+                setup.calendar, Annual, Unadjusted, Thirty360(Thirty360::BondBasis),
+                euribor6m));
+        }
+
+        auto forecastingCurve = ext::make_shared<PiecewiseYieldCurve<ZeroYield, Linear>>(
+            setup.settlementDate, forecastingInstruments, setup.dayCounter);
+        forecastingCurve->enableExtrapolation();
+        euriborTS.linkTo(forecastingCurve);
+
+        // Build DISCOUNTING curve (OIS deposits + swaps)
+        RelinkableHandle<YieldTermStructure> oisTS;
+        auto eonia = ext::make_shared<Eonia>(oisTS);
+
+        std::vector<ext::shared_ptr<RateHelper>> discountingInstruments;
+        for (Size idx = 0; idx < config.numOisDeposits; ++idx)
+        {
+            auto oisDepoQuote = ext::make_shared<SimpleQuote>(oisDepoRates[idx]);
+            discountingInstruments.push_back(ext::make_shared<DepositRateHelper>(
+                Handle<Quote>(oisDepoQuote), config.oisDepoTenors[idx], setup.fixingDays,
+                setup.calendar, ModifiedFollowing, true, Actual360()));
+        }
+        for (Size idx = 0; idx < config.numOisSwaps; ++idx)
+        {
+            auto oisSwapQuote = ext::make_shared<SimpleQuote>(oisSwapRatesAD[idx]);
+            discountingInstruments.push_back(ext::make_shared<OISRateHelper>(
+                2, config.oisSwapTenors[idx], Handle<Quote>(oisSwapQuote), eonia));
+        }
+
+        auto discountingCurve = ext::make_shared<PiecewiseYieldCurve<ZeroYield, Linear>>(
+            setup.settlementDate, discountingInstruments, setup.dayCounter);
+        discountingCurve->enableExtrapolation();
+        oisTS.linkTo(discountingCurve);
+
+        // Extract zero rates for LMM from forecasting curve
+        std::vector<Date> curveDates;
+        std::vector<RealAD> zeroRates;
+        curveDates.push_back(setup.settlementDate);
+        zeroRates.push_back(forecastingCurve->zeroRate(setup.settlementDate, setup.dayCounter, Continuous).rate());
+        Date endDate = setup.settlementDate + config.curveEndYears * Years;
+        curveDates.push_back(endDate);
+        zeroRates.push_back(forecastingCurve->zeroRate(endDate, setup.dayCounter, Continuous).rate());
+
+        std::vector<Rate> zeroRates_ql;
+        for (const auto& r : zeroRates) zeroRates_ql.push_back(r);
+
+        // Build LMM process using forecasting curve
+        RelinkableHandle<YieldTermStructure> termStructure;
+        ext::shared_ptr<IborIndex> index(new Euribor6M(termStructure));
+        index->addFixing(Date(2, September, 2005), 0.04);
+        termStructure.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_ql, setup.dayCounter));
+
+        ext::shared_ptr<LiborForwardModelProcess> process(
+            new LiborForwardModelProcess(config.size, index));
+        process->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
+            new LfmCovarianceProxy(
+                ext::make_shared<LmLinearExponentialVolatilityModel>(
+                    process->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
+                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
+
+        // Get swap rate (using OIS curve for discounting)
+        ext::shared_ptr<VanillaSwap> fwdSwap(
+            new VanillaSwap(Swap::Receiver, 1.0,
+                            setup.schedule, 0.05, setup.dayCounter,
+                            setup.schedule, index, 0.0, index->dayCounter()));
+        fwdSwap->setPricingEngine(ext::make_shared<DiscountingSwapEngine>(
+            Handle<YieldTermStructure>(discountingCurve)));
+        RealAD swapRate = fwdSwap->fairRate();
+
+        // Extract intermediates:
+        // [0, size-1]: forward rates from LMM process
+        // [size]: swap rate
+        // [size+1, 2*size]: OIS discount factors at accrual end times
+        Array initRates = process->initialValues();
+        std::vector<RealAD> intermediates(numIntermediates);
+
+        // Forward rates
+        for (Size k = 0; k < config.size; ++k)
+            intermediates[k] = initRates[k];
+
+        // Swap rate
+        intermediates[config.size] = swapRate;
+
+        // OIS discount factors
+        for (Size k = 0; k < config.size; ++k)
+        {
+            Time t = setup.accrualEnd[k];
+            intermediates[config.size + 1 + k] = discountingCurve->discount(t);
+        }
+
+        // Register intermediates as outputs
+        tape.registerOutputs(intermediates);
+
+        auto t_curve_end = Clock::now();
+
+        // =====================================================================
+        // Phase 1b: Compute Jacobian via XAD adjoints
+        // =====================================================================
+        std::vector<double> jacobian(numIntermediates * numMarketQuotes);
+
+        for (Size i = 0; i < numIntermediates; ++i)
+        {
+            tape.clearDerivatives();
+            derivative(intermediates[i]) = 1.0;
+            tape.computeAdjoints();
+
+            Size col = 0;
+            // Forecasting inputs
+            for (Size j = 0; j < config.numDeposits; ++j)
+                jacobian[i * numMarketQuotes + col++] = derivative(depositRates[j]);
+            for (Size j = 0; j < config.numSwaps; ++j)
+                jacobian[i * numMarketQuotes + col++] = derivative(swapRatesAD[j]);
+            // Discounting inputs
+            for (Size j = 0; j < config.numOisDeposits; ++j)
+                jacobian[i * numMarketQuotes + col++] = derivative(oisDepoRates[j]);
+            for (Size j = 0; j < config.numOisSwaps; ++j)
+                jacobian[i * numMarketQuotes + col++] = derivative(oisSwapRatesAD[j]);
+        }
+
+        tape.deactivate();
+
+        auto t_jacobian_end = Clock::now();
+
+        // =====================================================================
+        // Phase 2: JIT graph recording (using JITCompiler without backend)
+        // =====================================================================
+        xad::JITCompiler<double> jit;  // Default constructor - for recording only
+
+        // Register JIT inputs: forward rates, swap rate, OIS discount factors, and randoms
+        std::vector<xad::AD> jit_initRates(config.size);
+        xad::AD jit_swapRate;
+        std::vector<xad::AD> jit_oisDiscounts(config.size);
+        std::vector<xad::AD> jit_randoms(setup.fullGridRandoms);
+
+        for (Size k = 0; k < config.size; ++k)
+        {
+            jit_initRates[k] = xad::AD(value(initRates[k]));
+            jit.registerInput(jit_initRates[k]);
+        }
+        jit_swapRate = xad::AD(value(swapRate));
+        jit.registerInput(jit_swapRate);
+
+        for (Size k = 0; k < config.size; ++k)
+        {
+            jit_oisDiscounts[k] = xad::AD(value(intermediates[config.size + 1 + k]));
+            jit.registerInput(jit_oisDiscounts[k]);
+        }
+
+        for (Size m = 0; m < setup.fullGridRandoms; ++m)
+        {
+            jit_randoms[m] = xad::AD(0.0);
+            jit.registerInput(jit_randoms[m]);
+        }
+
+        jit.newRecording();
+
+        // Record path evolution
+        std::vector<xad::AD> asset(config.size);
+        std::vector<xad::AD> assetAtExercise(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = jit_initRates[k];
+
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = jit_randoms[offset + f];
+
+            Array asset_arr(config.size);
+            for (Size k = 0; k < config.size; ++k)
+                asset_arr[k] = asset[k];
+
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = evolved[k];
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // Compute payoff using OIS discount factors for discounting
+        std::vector<xad::AD> dis(config.size);
+        xad::AD df = xad::AD(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (xad::AD(1.0) + assetAtExercise[k] * accrual);
+            // Use OIS discount factors for dual-curve discounting
+            dis[k] = jit_oisDiscounts[k];
+        }
+
+        xad::AD npv = xad::AD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv = npv + (jit_swapRate - assetAtExercise[m]) * accrual * dis[m];
+        }
+
+        // Payoff = max(npv, 0)
+        xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
+        jit.registerOutput(payoff);
+
+        // Get the JIT graph and deactivate
+        const auto& jitGraph = jit.getGraph();
+        jit.deactivate();
+
+        // =====================================================================
+        // Phase 3: AVX backend compilation and batched execution
+        // =====================================================================
+        xad::forge::ForgeBackendAVX<double> avxBackend(false);
+        avxBackend.compile(jitGraph);
+
+        auto t_compile_end = Clock::now();
+
+        constexpr int BATCH_SIZE = xad::forge::ForgeBackendAVX<double>::VECTOR_WIDTH;
+        Size numBatches = (nrTrails + BATCH_SIZE - 1) / BATCH_SIZE;
+
+        std::vector<double> inputBatch(BATCH_SIZE);
+        std::vector<double> outputBatch(BATCH_SIZE);
+
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
+
+        // Number of inputs: forward rates + swap rate + OIS discounts + randoms
+        std::size_t numInputs = config.size + 1 + config.size + setup.fullGridRandoms;
+        std::vector<double> inputGradients(numInputs * BATCH_SIZE);
+
+        for (Size batch = 0; batch < numBatches; ++batch)
+        {
+            Size batchStart = batch * BATCH_SIZE;
+            Size actualBatchSize = std::min(static_cast<Size>(BATCH_SIZE), nrTrails - batchStart);
+
+            // Set initRates (same for all paths in batch)
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                    inputBatch[lane] = value(initRates[k]);
+                avxBackend.setInput(k, inputBatch.data());
+            }
+
+            // Set swapRate (same for all paths in batch)
+            for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                inputBatch[lane] = value(swapRate);
+            avxBackend.setInput(config.size, inputBatch.data());
+
+            // Set OIS discount factors (same for all paths in batch)
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                    inputBatch[lane] = value(intermediates[config.size + 1 + k]);
+                avxBackend.setInput(config.size + 1 + k, inputBatch.data());
+            }
+
+            // Set random numbers (different for each path in batch)
+            Size randomInputOffset = config.size + 1 + config.size;  // After forward rates, swap rate, OIS discounts
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+            {
+                for (int lane = 0; lane < BATCH_SIZE; ++lane)
+                {
+                    Size pathIdx = batchStart + lane;
+                    inputBatch[lane] = (pathIdx < nrTrails) ? setup.allRandoms[pathIdx][m] : 0.0;
+                }
+                avxBackend.setInput(randomInputOffset + m, inputBatch.data());
+            }
+
+            // Execute forward + backward in one call
+            avxBackend.forwardAndBackward(outputBatch.data(), inputGradients.data());
+
+            // Accumulate MC price
+            for (Size lane = 0; lane < actualBatchSize; ++lane)
+            {
+                mcPrice += outputBatch[lane];
+            }
+
+            // Accumulate gradients for initRates
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (Size lane = 0; lane < actualBatchSize; ++lane)
+                {
+                    dPrice_dIntermediates[k] += inputGradients[k * BATCH_SIZE + lane];
+                }
+            }
+
+            // Accumulate gradient for swap rate
+            for (Size lane = 0; lane < actualBatchSize; ++lane)
+            {
+                dPrice_dIntermediates[config.size] += inputGradients[config.size * BATCH_SIZE + lane];
+            }
+
+            // Accumulate gradients for OIS discount factors
+            for (Size k = 0; k < config.size; ++k)
+            {
+                for (Size lane = 0; lane < actualBatchSize; ++lane)
+                {
+                    dPrice_dIntermediates[config.size + 1 + k] += inputGradients[(config.size + 1 + k) * BATCH_SIZE + lane];
+                }
+            }
+        }
+
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+        // =====================================================================
+        // Phase 4: Apply chain rule to get market sensitivities
+        // =====================================================================
+        std::vector<double> finalDerivatives(numMarketQuotes);
+        applyChainRule(jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
+                       numIntermediates, numMarketQuotes);
+
+        auto t_end = Clock::now();
+
+        if (iter >= warmup)
+        {
+            times.push_back(DurationMs(t_end - t_start).count());
+            phase1_times.push_back(DurationMs(t_curve_end - t_start).count());
+            phase2_times.push_back(DurationMs(t_jacobian_end - t_curve_end).count());
+            phase3_times.push_back(DurationMs(t_compile_end - t_jacobian_end).count());
+        }
+
+        (void)finalDerivatives;
+        (void)mcPrice;
+    }
+
+    mean = computeMean(times);
+    stddev = computeStddev(times);
+    phase1_curve_mean = computeMean(phase1_times);
+    phase2_jacobian_mean = computeMean(phase2_times);
+    phase3_compile_mean = computeMean(phase3_times);
 }
 
 #endif // QLRISKS_HAS_FORGE
@@ -894,7 +1574,7 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
             result.jit_enabled = true;
             std::cout << "JIT=" << result.jit_mean << "ms ";
 
-            // Forge JIT-AVX
+            // Forge JIT-AVX (batched execution)
             runJITAVXBenchmark(config, setup, nrTrails, warmup, bench,
                                result.jit_avx_mean, result.jit_avx_std);
             result.jit_avx_enabled = true;
@@ -972,13 +1652,12 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
             result.jit_fixed_mean = jit_p1 + jit_p2 + jit_p3;
             std::cout << "JIT=" << result.jit_mean << "ms ";
 
-            // Forge JIT-AVX (dual-curve)
+            // Forge JIT-AVX (dual-curve, batched execution)
             double avx_p1 = 0, avx_p2 = 0, avx_p3 = 0;
             runJITAVXBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                          result.jit_avx_mean, result.jit_avx_std,
                                          avx_p1, avx_p2, avx_p3);
             result.jit_avx_enabled = true;
-            // Note: AVX uses same setup phases, so we just use JIT's phase timings
             std::cout << "JIT-AVX=" << result.jit_avx_mean << "ms";
         }
 #else
