@@ -295,33 +295,10 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
 
         tape.deactivate();
 
-        // Extract intermediate values as plain doubles
-        std::vector<double> intermediateValues(numIntermediates);
-        for (Size k = 0; k < numIntermediates; ++k)
-            intermediateValues[k] = value(intermediates[k]);
-
-        // Extract zero rates as plain doubles for JIT process creation
-        std::vector<Rate> zeroRates_jit;
-        for (const auto& r : zeroRates) zeroRates_jit.push_back(value(r));
-
-        // Create fresh process for JIT recording (using plain double ZeroCurve)
-        RelinkableHandle<YieldTermStructure> termStructureJit;
-        ext::shared_ptr<IborIndex> indexJit(new Euribor6M(termStructureJit));
-        indexJit->addFixing(Date(2, September, 2005), 0.04);
-        termStructureJit.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_jit, setup.dayCounter));
-
-        ext::shared_ptr<LiborForwardModelProcess> processJit(
-            new LiborForwardModelProcess(config.size, indexJit));
-        processJit->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
-            new LfmCovarianceProxy(
-                ext::make_shared<LmLinearExponentialVolatilityModel>(
-                    processJit->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
-                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
-
         // =====================================================================
         // Phase 2: JIT graph recording and compilation
         // =====================================================================
-        auto backend = std::make_unique<BackendType>();
+        auto backend = std::make_unique<BackendType>(false);
         xad::JITCompiler<double> jit(std::move(backend));
 
         // Register JIT inputs: forward rates, swap rate, and randoms
@@ -331,10 +308,10 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
 
         for (Size k = 0; k < config.size; ++k)
         {
-            jit_initRates[k] = xad::AD(intermediateValues[k]);
+            jit_initRates[k] = xad::AD(value(initRates[k]));
             jit.registerInput(jit_initRates[k]);
         }
-        jit_swapRate = xad::AD(intermediateValues[config.size]);
+        jit_swapRate = xad::AD(value(swapRate));
         jit.registerInput(jit_swapRate);
 
         for (Size m = 0; m < setup.fullGridRandoms; ++m)
@@ -365,7 +342,7 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
             for (Size k = 0; k < config.size; ++k)
                 asset_arr[k] = asset[k];
 
-            Array evolved = processJit->evolve(t, asset_arr, dt, dw);
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = evolved[k];
 
@@ -404,6 +381,7 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
         // Phase 3: Execute JIT kernel for all MC paths
         // =====================================================================
         const auto& graph = jit.getGraph();
+        uint32_t outputSlot = graph.output_ids[0];
 
         double mcPrice = 0.0;
         std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
@@ -412,8 +390,8 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
         {
             // Set inputs
             for (Size k = 0; k < config.size; ++k)
-                value(jit_initRates[k]) = intermediateValues[k];
-            value(jit_swapRate) = intermediateValues[config.size];
+                value(jit_initRates[k]) = value(initRates[k]);
+            value(jit_swapRate) = value(swapRate);
             for (Size m = 0; m < setup.fullGridRandoms; ++m)
                 value(jit_randoms[m]) = setup.allRandoms[n][m];
 
@@ -424,7 +402,7 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
 
             // Accumulate gradients w.r.t. intermediates
             jit.clearDerivatives();
-            jit.setDerivative(graph.output_ids[0], 1.0);
+            jit.setDerivative(outputSlot, 1.0);
             jit.computeAdjoints();
 
             for (Size k = 0; k < config.size; ++k)
@@ -670,33 +648,10 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
 
         auto t_jacobian_end = Clock::now();
 
-        // Extract intermediate values as plain doubles
-        std::vector<double> intermediateValues(numIntermediates);
-        for (Size k = 0; k < numIntermediates; ++k)
-            intermediateValues[k] = value(intermediates[k]);
-
-        // Extract zero rates as plain doubles for JIT process creation
-        std::vector<Rate> zeroRates_jit;
-        for (const auto& r : zeroRates) zeroRates_jit.push_back(value(r));
-
-        // Create fresh process for JIT recording (using plain double ZeroCurve)
-        RelinkableHandle<YieldTermStructure> termStructureJit;
-        ext::shared_ptr<IborIndex> indexJit(new Euribor6M(termStructureJit));
-        indexJit->addFixing(Date(2, September, 2005), 0.04);
-        termStructureJit.linkTo(ext::make_shared<ZeroCurve>(curveDates, zeroRates_jit, setup.dayCounter));
-
-        ext::shared_ptr<LiborForwardModelProcess> processJit(
-            new LiborForwardModelProcess(config.size, indexJit));
-        processJit->setCovarParam(ext::shared_ptr<LfmCovarianceParameterization>(
-            new LfmCovarianceProxy(
-                ext::make_shared<LmLinearExponentialVolatilityModel>(
-                    processJit->fixingTimes(), 0.291, 1.483, 0.116, 0.00001),
-                ext::make_shared<LmExponentialCorrelationModel>(config.size, 0.5))));
-
         // =====================================================================
         // Phase 2: JIT graph recording and compilation
         // =====================================================================
-        auto backend = std::make_unique<BackendType>();
+        auto backend = std::make_unique<BackendType>(false);
         xad::JITCompiler<double> jit(std::move(backend));
 
         // Register JIT inputs: forward rates, swap rate, OIS discount factors, and randoms
@@ -707,15 +662,15 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
 
         for (Size k = 0; k < config.size; ++k)
         {
-            jit_initRates[k] = xad::AD(intermediateValues[k]);
+            jit_initRates[k] = xad::AD(value(initRates[k]));
             jit.registerInput(jit_initRates[k]);
         }
-        jit_swapRate = xad::AD(intermediateValues[config.size]);
+        jit_swapRate = xad::AD(value(swapRateAD));
         jit.registerInput(jit_swapRate);
 
         for (Size k = 0; k < config.size; ++k)
         {
-            jit_oisDiscounts[k] = xad::AD(intermediateValues[config.size + 1 + k]);
+            jit_oisDiscounts[k] = xad::AD(value(oisDiscounts[k]));
             jit.registerInput(jit_oisDiscounts[k]);
         }
 
@@ -747,7 +702,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
             for (Size k = 0; k < config.size; ++k)
                 asset_arr[k] = asset[k];
 
-            Array evolved = processJit->evolve(t, asset_arr, dt, dw);
+            Array evolved = process->evolve(t, asset_arr, dt, dw);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = evolved[k];
 
@@ -789,6 +744,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
         // Phase 4: Execute JIT kernel for all MC paths
         // =====================================================================
         const auto& graph = jit.getGraph();
+        uint32_t outputSlot = graph.output_ids[0];
 
         double mcPrice = 0.0;
         std::vector<double> dPrice_dIntermediates(numIntermediates, 0.0);
@@ -797,10 +753,10 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
         {
             // Set inputs
             for (Size k = 0; k < config.size; ++k)
-                value(jit_initRates[k]) = intermediateValues[k];
-            value(jit_swapRate) = intermediateValues[config.size];
+                value(jit_initRates[k]) = value(initRates[k]);
+            value(jit_swapRate) = value(swapRateAD);
             for (Size k = 0; k < config.size; ++k)
-                value(jit_oisDiscounts[k]) = intermediateValues[config.size + 1 + k];
+                value(jit_oisDiscounts[k]) = value(oisDiscounts[k]);
             for (Size m = 0; m < setup.fullGridRandoms; ++m)
                 value(jit_randoms[m]) = setup.allRandoms[n][m];
 
@@ -811,7 +767,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
 
             // Accumulate gradients w.r.t. intermediates
             jit.clearDerivatives();
-            jit.setDerivative(graph.output_ids[0], 1.0);
+            jit.setDerivative(outputSlot, 1.0);
             jit.computeAdjoints();
 
             // Forward rates
