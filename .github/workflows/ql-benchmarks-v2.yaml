@@ -301,6 +301,10 @@ jobs:
               'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
           }
 
+          # Column display names
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT', 'JITAVX': 'JIT-AVX2'}
+          col_width = 10  # Width for each numeric column
+
           for config in configs:
               if config not in data:
                   continue
@@ -321,39 +325,42 @@ jobs:
                               has_fixed = True
                               break
 
-              # Header
+              # Build header
               method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
               present_methods = [m for m in method_order if m in methods]
+
+              header = f"{'Paths':>6}"
+              for m in present_methods:
+                  header += f"{method_display[m]:>{col_width}}"
               if has_fixed:
-                  header = "| Paths |" + "".join(f" {m} |" for m in present_methods) + " Setup* |"
-                  sep = "|------:|" + "".join("-------:|" for _ in present_methods) + "-------:|"
-              else:
-                  header = "| Paths |" + "".join(f" {m} |" for m in present_methods)
-                  sep = "|------:|" + "".join("-------:|" for _ in present_methods)
+                  header += f"{'JIT-Setup':>{col_width}}"
               print(header)
+
+              # Separator line
+              sep = "-" * len(header)
               print(sep)
 
               # Data rows
               for paths in all_paths:
-                  row = f"| {format_paths(paths)} |"
+                  row = f"{format_paths(paths):>6}"
                   fixed_val = 0
                   for m in present_methods:
                       val = methods[m].get(paths)
                       if val:
-                          row += f" {format_num(val['mean'])} |"
+                          row += f"{format_num(val['mean']):>{col_width}}"
                           if m in ['JIT', 'JITAVX'] and val.get('fixed', 0) > 0:
                               fixed_val = val['fixed']
                       else:
-                          row += " - |"
+                          row += f"{'-':>{col_width}}"
                   if has_fixed:
                       if fixed_val > 0:
-                          row += f" {format_num(fixed_val)} |"
+                          row += f"{format_num(fixed_val):>{col_width}}"
                       else:
-                          row += " - |"
+                          row += f"{'-':>{col_width}}"
                   print(row)
 
-          print("\n_All times in milliseconds (ms)._")
-          print("_*Setup = one-time cost for JIT (curve bootstrap + Jacobian). Constant regardless of paths._")
+          print("\nAll times in milliseconds (ms).")
+          print("JIT-Setup = one-time cost (curve bootstrap + Jacobian). Constant regardless of paths.")
           PYEOF
 
           python3 format_results.py \
