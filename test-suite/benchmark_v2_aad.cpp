@@ -659,8 +659,15 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
         std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
                   << formatPathCount(paths) << " paths " << std::flush;
 
-        size_t warmup = quickMode ? 1 : config.warmupIterations;
-        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+        // For high path counts, skip warmup and use fewer iterations
+        size_t warmup, bench;
+        if (nrTrails >= 10000) {
+            warmup = 0;
+            bench = 2;
+        } else {
+            warmup = quickMode ? 1 : config.warmupIterations;
+            bench = quickMode ? 2 : config.benchmarkIterations;
+        }
 
         // XAD tape
         runXADBenchmark(config, setup, nrTrails, warmup, bench,
@@ -724,8 +731,15 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
                   << formatPathCount(paths) << " paths (" << config.numMarketQuotes()
                   << " sensitivities) " << std::flush;
 
-        size_t warmup = quickMode ? 1 : config.warmupIterations;
-        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+        // For high path counts, skip warmup and use fewer iterations
+        size_t warmup, bench;
+        if (nrTrails >= 10000) {
+            warmup = 0;
+            bench = 2;
+        } else {
+            warmup = quickMode ? 1 : config.warmupIterations;
+            bench = quickMode ? 2 : config.benchmarkIterations;
+        }
 
         // XAD tape (dual-curve)
         runXADBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,

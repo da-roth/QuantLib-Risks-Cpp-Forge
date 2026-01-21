@@ -59,10 +59,10 @@ inline double computeStddev(const std::vector<double>& v)
 // ============================================================================
 
 // Maximum paths for finite differences (FD is O(n) per path for n parameters)
-constexpr int FD_MAX_PATHS = 1000;
+constexpr int FD_MAX_PATHS = 100000;
 
-// Reduced max paths for production config (50 inputs makes FD very slow)
-constexpr int FD_MAX_PATHS_PRODUCTION = 100;
+// Reduced max paths for production config (45 inputs makes FD very slow)
+constexpr int FD_MAX_PATHS_PRODUCTION = 10000;
 
 struct BenchmarkConfig
 {

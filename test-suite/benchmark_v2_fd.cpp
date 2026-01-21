@@ -67,8 +67,15 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
         std::vector<double> fd_times;
         double eps = 1e-5;
 
-        size_t warmup = quickMode ? 1 : config.warmupIterations;
-        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+        // For high path counts, skip warmup and run once (FD is expensive)
+        size_t warmup, bench;
+        if (paths >= 10000) {
+            warmup = 0;
+            bench = 1;
+        } else {
+            warmup = quickMode ? 1 : config.warmupIterations;
+            bench = quickMode ? 2 : config.benchmarkIterations;
+        }
 
         for (size_t iter = 0; iter < warmup + bench; ++iter)
         {
@@ -165,8 +172,15 @@ std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config,
         std::vector<double> fd_times;
         double eps = 1e-5;
 
-        size_t warmup = quickMode ? 1 : config.warmupIterations;
-        size_t bench = quickMode ? 2 : config.benchmarkIterations;
+        // For high path counts, skip warmup and run once (FD is expensive)
+        size_t warmup, bench;
+        if (paths >= 10000) {
+            warmup = 0;
+            bench = 1;
+        } else {
+            warmup = quickMode ? 1 : config.warmupIterations;
+            bench = quickMode ? 2 : config.benchmarkIterations;
+        }
 
         for (size_t iter = 0; iter < warmup + bench; ++iter)
         {
