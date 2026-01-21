@@ -665,12 +665,12 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
             jit_initRates[k] = xad::AD(value(initRates[k]));
             jit.registerInput(jit_initRates[k]);
         }
-        jit_swapRate = xad::AD(value(swapRateAD));
+        jit_swapRate = xad::AD(value(swapRate));
         jit.registerInput(jit_swapRate);
 
         for (Size k = 0; k < config.size; ++k)
         {
-            jit_oisDiscounts[k] = xad::AD(value(oisDiscounts[k]));
+            jit_oisDiscounts[k] = xad::AD(value(intermediates[config.size + 1 + k]));
             jit.registerInput(jit_oisDiscounts[k]);
         }
 
@@ -754,9 +754,9 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
             // Set inputs
             for (Size k = 0; k < config.size; ++k)
                 value(jit_initRates[k]) = value(initRates[k]);
-            value(jit_swapRate) = value(swapRateAD);
+            value(jit_swapRate) = value(swapRate);
             for (Size k = 0; k < config.size; ++k)
-                value(jit_oisDiscounts[k]) = value(oisDiscounts[k]);
+                value(jit_oisDiscounts[k]) = value(intermediates[config.size + 1 + k]);
             for (Size m = 0; m < setup.fullGridRandoms; ++m)
                 value(jit_randoms[m]) = setup.allRandoms[n][m];
 
