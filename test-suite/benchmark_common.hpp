@@ -61,8 +61,8 @@ inline double computeStddev(const std::vector<double>& v)
 // Maximum paths for finite differences (FD is O(n) per path for n parameters)
 constexpr int FD_MAX_PATHS = 100000;
 
-// Reduced max paths for production config (45 inputs makes FD very slow)
-constexpr int FD_MAX_PATHS_PRODUCTION = 10000;
+// Max paths for production config (45 inputs) - same as regular, run all paths
+constexpr int FD_MAX_PATHS_PRODUCTION = 100000;
 
 struct BenchmarkConfig
 {
@@ -182,8 +182,8 @@ struct BenchmarkConfig
 
         curveEndYears = 22;  // Extended for 20Y swap tenors
 
-        // Use fewer path counts since FD is very slow with 47 inputs
-        pathCounts = {10, 100, 1000, 10000};
+        // Full path counts including 100K for production
+        pathCounts = {10, 100, 1000, 10000, 100000};
 
         instrumentDesc = "European swaption (5Y into 5Y, dual-curve)";
         benchmarkName = "Production";

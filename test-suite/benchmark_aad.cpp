@@ -1551,7 +1551,10 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 
         // For high path counts, skip warmup and use fewer iterations
         size_t warmup, bench;
-        if (nrTrails >= 10000) {
+        if (nrTrails >= 100000) {
+            warmup = 0;
+            bench = 1;  // Single run for 100K+ (too expensive for multiple)
+        } else if (nrTrails >= 10000) {
             warmup = 0;
             bench = 2;
         } else {
@@ -1623,7 +1626,10 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
 
         // For high path counts, skip warmup and use fewer iterations
         size_t warmup, bench;
-        if (nrTrails >= 10000) {
+        if (nrTrails >= 100000) {
+            warmup = 0;
+            bench = 1;  // Single run for 100K+ (too expensive for multiple)
+        } else if (nrTrails >= 10000) {
             warmup = 0;
             bench = 2;
         } else {
