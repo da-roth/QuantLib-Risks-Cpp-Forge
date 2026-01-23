@@ -481,16 +481,18 @@ struct PayoffVariables {
     std::vector<ADType> initRates;
     ADType swapRate;
     std::vector<ADType> oisDiscounts;  // Empty for single-curve
-    std::vector<ADType> randoms;
+    std::vector<ADType> randoms;       // For JIT only; XAD-Split uses plain doubles
 };
 
 // Compute the MC path payoff (shared between JIT and XAD-Split)
-template <typename ADType, bool UseDualCurve>
+// RandomsType: std::vector<double> for XAD-Split, std::vector<xad::AD> for JIT
+template <typename ADType, bool UseDualCurve, typename RandomsType>
 ADType computePathPayoff(
     const BenchmarkConfig& config,
     const LMMSetup& setup,
     const ext::shared_ptr<LiborForwardModelProcess>& process,
-    PayoffVariables<ADType>& vars)
+    PayoffVariables<ADType>& vars,
+    const RandomsType& randoms)
 {
     std::vector<ADType> asset(config.size);
     std::vector<ADType> assetAtExercise(config.size);
@@ -502,7 +504,7 @@ ADType computePathPayoff(
         Size offset = (step - 1) * setup.numFactors;
         Array dw(setup.numFactors);
         for (Size f = 0; f < setup.numFactors; ++f)
-            dw[f] = vars.randoms[offset + f];
+            dw[f] = randoms[offset + f];
 
         Array asset_arr(config.size);
         for (Size k = 0; k < config.size; ++k)
@@ -518,12 +520,22 @@ ADType computePathPayoff(
     }
 
     std::vector<ADType> dis(config.size);
-    ADType df = ADType(1.0);
-    for (Size k = 0; k < config.size; ++k)
+    if constexpr (UseDualCurve)
     {
-        double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
-        df = df / (ADType(1.0) + assetAtExercise[k] * accrual);
-        dis[k] = UseDualCurve ? vars.oisDiscounts[k] : df;
+        // Dual-curve: use OIS discount factors directly
+        for (Size k = 0; k < config.size; ++k)
+            dis[k] = vars.oisDiscounts[k];
+    }
+    else
+    {
+        // Single-curve: compute discount factors from forward rates
+        ADType df = ADType(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (ADType(1.0) + assetAtExercise[k] * accrual);
+            dis[k] = df;
+        }
     }
 
     ADType npv = ADType(0.0);
@@ -577,12 +589,12 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Setup payoff variables (same structure as JIT)
+            // Setup payoff variables - only initRates and swapRate are AD inputs
+            // Randoms are NOT AD inputs (same as full XAD benchmark)
             PayoffVariables<RealAD> vars;
             vars.initRates.resize(config.size);
-            vars.randoms.resize(setup.fullGridRandoms);
 
-            // Register inputs: initRates, swapRate, randoms (same as JIT)
+            // Register inputs: initRates, swapRate (NOT randoms - they're constants)
             for (Size k = 0; k < config.size; ++k)
             {
                 vars.initRates[k] = initRatesVal[k];
@@ -591,16 +603,10 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             vars.swapRate = swapRateVal;
             mcTape.registerInput(vars.swapRate);
 
-            for (Size m = 0; m < setup.fullGridRandoms; ++m)
-            {
-                vars.randoms[m] = setup.allRandoms[n][m];
-                mcTape.registerInput(vars.randoms[m]);
-            }
-
             mcTape.newRecording();
 
-            // Compute payoff using shared function (same computation as JIT)
-            RealAD npv = computePathPayoff<RealAD, false>(config, setup, curve.process, vars);
+            // Compute payoff - pass randoms as plain doubles (no differentiation through randoms)
+            RealAD npv = computePathPayoff<RealAD, false>(config, setup, curve.process, vars, setup.allRandoms[n]);
 
             // Payoff = max(npv, 0)
             RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
@@ -689,13 +695,13 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Setup payoff variables (same structure as JIT)
+            // Setup payoff variables - only initRates, swapRate, oisDiscounts are AD inputs
+            // Randoms are NOT AD inputs (same as full XAD benchmark)
             PayoffVariables<RealAD> vars;
             vars.initRates.resize(config.size);
             vars.oisDiscounts.resize(config.size);
-            vars.randoms.resize(setup.fullGridRandoms);
 
-            // Register inputs: initRates, swapRate, oisDiscounts, randoms (same as JIT)
+            // Register inputs: initRates, swapRate, oisDiscounts (NOT randoms - they're constants)
             for (Size k = 0; k < config.size; ++k)
             {
                 vars.initRates[k] = initRatesVal[k];
@@ -710,16 +716,10 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
                 mcTape.registerInput(vars.oisDiscounts[k]);
             }
 
-            for (Size m = 0; m < setup.fullGridRandoms; ++m)
-            {
-                vars.randoms[m] = setup.allRandoms[n][m];
-                mcTape.registerInput(vars.randoms[m]);
-            }
-
             mcTape.newRecording();
 
-            // Compute payoff using shared function (same computation as JIT)
-            RealAD npv = computePathPayoff<RealAD, true>(config, setup, curve.process, vars);
+            // Compute payoff - pass randoms as plain doubles (no differentiation through randoms)
+            RealAD npv = computePathPayoff<RealAD, true>(config, setup, curve.process, vars, setup.allRandoms[n]);
 
             // max(npv, 0)
             RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
@@ -810,8 +810,8 @@ void recordJITGraph(
 
     jit.newRecording();
 
-    // Compute NPV using shared function (same computation as XAD-Split)
-    xad::AD npv = computePathPayoff<xad::AD, UseDualCurve>(config, setup, curve.process, vars);
+    // Compute NPV using shared function - pass vars.randoms for JIT graph recording
+    xad::AD npv = computePathPayoff<xad::AD, UseDualCurve>(config, setup, curve.process, vars, vars.randoms);
 
     // Payoff = max(npv, 0) - JIT uses xad::less().If() for JIT compatibility
     xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
