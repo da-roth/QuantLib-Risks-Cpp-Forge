@@ -189,6 +189,8 @@ struct CurveSetupResult {
     ext::shared_ptr<LiborForwardModelProcess> process;    // LMM process for path evolution
     Size numIntermediates;                                // Number of intermediates
     Size numMarketQuotes;                                 // Number of market inputs
+    // Additional intermediates for dual-curve (OIS discount factors as doubles)
+    std::vector<double> oisDiscountFactors;
 };
 
 // Phase 1 for Single-Curve: Build curve, extract intermediates, compute Jacobian
@@ -467,6 +469,287 @@ CurveSetupResult buildDualCurveAndJacobian(
     tape.deactivate();
 
     return result;
+}
+
+// ============================================================================
+// XAD-Split Benchmark: Jacobian + XAD tape MC on intermediates + chain rule
+// ============================================================================
+
+// Helper function: Run MC simulation with intermediates as XAD inputs (Single-Curve)
+RealAD priceSwaptionFromIntermediates(
+    const BenchmarkConfig& config,
+    const LMMSetup& setup,
+    const std::vector<RealAD>& initRates,
+    const RealAD& swapRate,
+    const ext::shared_ptr<LiborForwardModelProcess>& process,
+    Size nrTrails)
+{
+    RealAD price = RealAD(0.0);
+
+    for (Size n = 0; n < nrTrails; ++n)
+    {
+        Array asset(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = initRates[k];
+
+        Array assetAtExercise(config.size);
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = setup.allRandoms[n][offset + f];
+
+            asset = process->evolve(t, asset, dt, dw);
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // Discount factors
+        Array dis(config.size);
+        RealAD df = RealAD(1.0);
+        for (Size k = 0; k < config.size; ++k)
+        {
+            RealAD accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+            df = df / (RealAD(1.0) + assetAtExercise[k] * accrual);
+            dis[k] = df;
+        }
+
+        // NPV
+        RealAD npv = RealAD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv += (swapRate - assetAtExercise[m]) * accrual * dis[m];
+        }
+
+        // max(npv, 0)
+        if (value(npv) > 0.0)
+            price += npv;
+    }
+
+    return price / RealAD(static_cast<double>(nrTrails));
+}
+
+// Helper function: Run MC simulation with intermediates as XAD inputs (Dual-Curve)
+RealAD priceSwaptionFromIntermediatesDualCurve(
+    const BenchmarkConfig& config,
+    const LMMSetup& setup,
+    const std::vector<RealAD>& initRates,
+    const RealAD& swapRate,
+    const std::vector<RealAD>& oisDiscounts,
+    const ext::shared_ptr<LiborForwardModelProcess>& process,
+    Size nrTrails)
+{
+    RealAD price = RealAD(0.0);
+
+    for (Size n = 0; n < nrTrails; ++n)
+    {
+        Array asset(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = initRates[k];
+
+        Array assetAtExercise(config.size);
+        for (Size step = 1; step <= setup.fullGridSteps; ++step)
+        {
+            Size offset = (step - 1) * setup.numFactors;
+            Time t = setup.grid[step - 1];
+            Time dt = setup.grid.dt(step - 1);
+
+            Array dw(setup.numFactors);
+            for (Size f = 0; f < setup.numFactors; ++f)
+                dw[f] = setup.allRandoms[n][offset + f];
+
+            asset = process->evolve(t, asset, dt, dw);
+
+            if (step == setup.exerciseStep)
+            {
+                for (Size k = 0; k < config.size; ++k)
+                    assetAtExercise[k] = asset[k];
+            }
+        }
+
+        // NPV using OIS discount factors
+        RealAD npv = RealAD(0.0);
+        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+        {
+            RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+            npv += (swapRate - assetAtExercise[m]) * accrual * oisDiscounts[m];
+        }
+
+        // max(npv, 0)
+        if (value(npv) > 0.0)
+            price += npv;
+    }
+
+    return price / RealAD(static_cast<double>(nrTrails));
+}
+
+// XAD-Split Benchmark (Single-Curve)
+void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
+                          Size nrTrails, size_t warmup, size_t bench,
+                          double& mean, double& stddev,
+                          double& fixed_cost_mean,
+                          ValidationResult* validation = nullptr)
+{
+    std::vector<double> times;
+    std::vector<double> fixed_times;
+
+    for (size_t iter = 0; iter < warmup + bench; ++iter)
+    {
+        auto t_start = Clock::now();
+
+        // Phase 1: Curve bootstrap and Jacobian computation (reuse existing function)
+        tape_type jacobianTape;
+        CurveSetupResult curve = buildSingleCurveAndJacobian(config, setup, jacobianTape);
+
+        auto t_jacobian_end = Clock::now();
+
+        // Phase 2: MC simulation with intermediates as XAD inputs
+        tape_type mcTape;
+
+        // Register intermediates as inputs
+        std::vector<RealAD> initRatesAD(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            initRatesAD[k] = value(curve.initRates[k]);
+        RealAD swapRateAD = value(curve.swapRate);
+
+        mcTape.registerInputs(initRatesAD);
+        mcTape.registerInput(swapRateAD);
+        mcTape.newRecording();
+
+        // Run MC
+        RealAD price = priceSwaptionFromIntermediates(
+            config, setup, initRatesAD, swapRateAD, curve.process, nrTrails);
+
+        // Compute adjoints
+        mcTape.registerOutput(price);
+        derivative(price) = 1.0;
+        mcTape.computeAdjoints();
+
+        // Extract derivatives w.r.t. intermediates
+        std::vector<double> dPrice_dIntermediates(curve.numIntermediates);
+        for (Size k = 0; k < config.size; ++k)
+            dPrice_dIntermediates[k] = derivative(initRatesAD[k]);
+        dPrice_dIntermediates[config.size] = derivative(swapRateAD);
+
+        // Phase 3: Apply chain rule
+        std::vector<double> finalDerivatives(curve.numMarketQuotes);
+        applyChainRule(curve.jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
+                       curve.numIntermediates, curve.numMarketQuotes);
+
+        auto t_end = Clock::now();
+
+        if (iter >= warmup)
+        {
+            times.push_back(DurationMs(t_end - t_start).count());
+            fixed_times.push_back(DurationMs(t_jacobian_end - t_start).count());
+        }
+
+        // Capture validation data
+        if (validation && iter == 0)
+        {
+            validation->method = "XADSPLIT";
+            validation->pv = value(price);
+            validation->sensitivities = finalDerivatives;
+        }
+
+        mcTape.clearAll();
+    }
+
+    mean = computeMean(times);
+    stddev = computeStddev(times);
+    fixed_cost_mean = computeMean(fixed_times);
+}
+
+// XAD-Split Benchmark (Dual-Curve)
+void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
+                                    Size nrTrails, size_t warmup, size_t bench,
+                                    double& mean, double& stddev,
+                                    double& fixed_cost_mean,
+                                    ValidationResult* validation = nullptr)
+{
+    std::vector<double> times;
+    std::vector<double> fixed_times;
+
+    for (size_t iter = 0; iter < warmup + bench; ++iter)
+    {
+        auto t_start = Clock::now();
+
+        // Phase 1: Curve bootstrap and Jacobian computation
+        tape_type jacobianTape;
+        CurveSetupResult curve = buildDualCurveAndJacobian(config, setup, jacobianTape);
+
+        auto t_jacobian_end = Clock::now();
+
+        // Phase 2: MC simulation with intermediates as XAD inputs
+        tape_type mcTape;
+
+        // Register intermediates as inputs
+        std::vector<RealAD> initRatesAD(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            initRatesAD[k] = value(curve.initRates[k]);
+        RealAD swapRateAD = value(curve.swapRate);
+        std::vector<RealAD> oisDiscountsAD(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            oisDiscountsAD[k] = value(curve.intermediates[config.size + 1 + k]);
+
+        mcTape.registerInputs(initRatesAD);
+        mcTape.registerInput(swapRateAD);
+        mcTape.registerInputs(oisDiscountsAD);
+        mcTape.newRecording();
+
+        // Run MC
+        RealAD price = priceSwaptionFromIntermediatesDualCurve(
+            config, setup, initRatesAD, swapRateAD, oisDiscountsAD, curve.process, nrTrails);
+
+        // Compute adjoints
+        mcTape.registerOutput(price);
+        derivative(price) = 1.0;
+        mcTape.computeAdjoints();
+
+        // Extract derivatives w.r.t. intermediates
+        std::vector<double> dPrice_dIntermediates(curve.numIntermediates);
+        for (Size k = 0; k < config.size; ++k)
+            dPrice_dIntermediates[k] = derivative(initRatesAD[k]);
+        dPrice_dIntermediates[config.size] = derivative(swapRateAD);
+        for (Size k = 0; k < config.size; ++k)
+            dPrice_dIntermediates[config.size + 1 + k] = derivative(oisDiscountsAD[k]);
+
+        // Phase 3: Apply chain rule
+        std::vector<double> finalDerivatives(curve.numMarketQuotes);
+        applyChainRule(curve.jacobian.data(), dPrice_dIntermediates.data(), finalDerivatives.data(),
+                       curve.numIntermediates, curve.numMarketQuotes);
+
+        auto t_end = Clock::now();
+
+        if (iter >= warmup)
+        {
+            times.push_back(DurationMs(t_end - t_start).count());
+            fixed_times.push_back(DurationMs(t_jacobian_end - t_start).count());
+        }
+
+        // Capture validation data
+        if (validation && iter == 0)
+        {
+            validation->method = "XADSPLIT";
+            validation->pv = value(price);
+            validation->sensitivities = finalDerivatives;
+        }
+
+        mcTape.clearAll();
+    }
+
+    mean = computeMean(times);
+    stddev = computeStddev(times);
+    fixed_cost_mean = computeMean(fixed_times);
 }
 
 // JIT variables holder for graph recording
@@ -1101,6 +1384,7 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
 std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
                                            bool quickMode, bool xadOnly,
                                            ValidationResult* xadValidation = nullptr,
+                                           ValidationResult* xadSplitValidation = nullptr,
                                            ValidationResult* jitValidation = nullptr,
                                            ValidationResult* jitAvxValidation = nullptr)
 {
@@ -1151,6 +1435,15 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 #if defined(QLRISKS_HAS_FORGE)
         if (!xadOnly)
         {
+            // XAD-Split (Jacobian + tape MC on intermediates + chain rule)
+            double xad_split_fixed = 0;
+            runXADSplitBenchmark(config, setup, nrTrails, warmup, bench,
+                                 result.xad_split_mean, result.xad_split_std, xad_split_fixed,
+                                 captureValidation ? xadSplitValidation : nullptr);
+            result.xad_split_enabled = true;
+            result.xad_split_fixed_mean = xad_split_fixed;
+            std::cout << "XAD-Split=" << result.xad_split_mean << "ms ";
+
             // Forge JIT
             runJITBenchmark(config, setup, nrTrails, warmup, bench,
                             result.jit_mean, result.jit_std,
@@ -1184,6 +1477,7 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config,
                                                     bool quickMode, bool xadOnly,
                                                     ValidationResult* xadValidation = nullptr,
+                                                    ValidationResult* xadSplitValidation = nullptr,
                                                     ValidationResult* jitValidation = nullptr,
                                                     ValidationResult* jitAvxValidation = nullptr)
 {
@@ -1235,6 +1529,15 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
 #if defined(QLRISKS_HAS_FORGE)
         if (!xadOnly)
         {
+            // XAD-Split (dual-curve)
+            double xad_split_fixed = 0;
+            runXADSplitBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
+                                           result.xad_split_mean, result.xad_split_std, xad_split_fixed,
+                                           captureValidation ? xadSplitValidation : nullptr);
+            result.xad_split_enabled = true;
+            result.xad_split_fixed_mean = xad_split_fixed;
+            std::cout << "XAD-Split=" << result.xad_split_mean << "ms ";
+
             // Forge JIT (dual-curve)
             double jit_p1 = 0, jit_p2 = 0, jit_p3 = 0;
             runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
@@ -1288,6 +1591,18 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
     std::cout << std::endl;
 
 #if defined(QLRISKS_HAS_FORGE)
+    // XAD-Split results (includes fixed cost: mean,std,enabled,fixed_cost)
+    std::cout << "XADSPLIT_" << configId << ":";
+    for (size_t i = 0; i < results.size(); ++i)
+    {
+        const auto& r = results[i];
+        if (i > 0) std::cout << ";";
+        std::cout << r.pathCount << "=" << r.xad_split_mean << "," << r.xad_split_std
+                  << "," << (r.xad_split_enabled ? "1" : "0")
+                  << "," << r.xad_split_fixed_mean;
+    }
+    std::cout << std::endl;
+
     // JIT results (now includes fixed cost: mean,std,enabled,fixed_cost)
     std::cout << "JIT_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
@@ -1409,13 +1724,16 @@ int main(int argc, char* argv[])
         BenchmarkConfig liteConfig;
         printBenchmarkHeader(liteConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation, jitAvxValidation;
-        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
+        ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly,
+                                       &xadValidation, &xadSplitValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(liteConfig);
         outputResultsForParsing(results, liteConfig.configId);
         if (!xadValidation.sensitivities.empty())
             outputValidationData(xadValidation, liteConfig.configId);
+        if (!xadSplitValidation.sensitivities.empty())
+            outputValidationData(xadSplitValidation, liteConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, liteConfig.configId);
         if (!jitAvxValidation.sensitivities.empty())
@@ -1428,13 +1746,16 @@ int main(int argc, char* argv[])
         liteExtConfig.setLiteExtendedConfig();
         printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation, jitAvxValidation;
-        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
+        ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly,
+                                       &xadValidation, &xadSplitValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(liteExtConfig);
         outputResultsForParsing(results, liteExtConfig.configId);
         if (!xadValidation.sensitivities.empty())
             outputValidationData(xadValidation, liteExtConfig.configId);
+        if (!xadSplitValidation.sensitivities.empty())
+            outputValidationData(xadSplitValidation, liteExtConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, liteExtConfig.configId);
         if (!jitAvxValidation.sensitivities.empty())
@@ -1447,13 +1768,16 @@ int main(int argc, char* argv[])
         prodConfig.setProductionConfig();
         printBenchmarkHeader(prodConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation, jitAvxValidation;
-        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
+        ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly,
+                                                &xadValidation, &xadSplitValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(prodConfig);
         outputResultsForParsing(results, prodConfig.configId);
         if (!xadValidation.sensitivities.empty())
             outputValidationData(xadValidation, prodConfig.configId);
+        if (!xadSplitValidation.sensitivities.empty())
+            outputValidationData(xadSplitValidation, prodConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, prodConfig.configId);
         if (!jitAvxValidation.sensitivities.empty())

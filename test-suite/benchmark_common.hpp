@@ -206,10 +206,12 @@ struct TimingResult
     int pathCount = 0;
     double fd_mean = 0, fd_std = 0;           // Finite differences (bump-and-revalue)
     double xad_mean = 0, xad_std = 0;         // XAD tape-based AAD
+    double xad_split_mean = 0, xad_split_std = 0; // XAD-Split (Jacobian + tape MC on intermediates + chain rule)
     double jit_mean = 0, jit_std = 0;         // Forge JIT scalar
     double jit_avx_mean = 0, jit_avx_std = 0; // Forge JIT AVX2
     bool fd_enabled = false;                  // Whether FD was run for this path count
     bool xad_enabled = false;
+    bool xad_split_enabled = false;
     bool jit_enabled = false;
     bool jit_avx_enabled = false;
 
@@ -224,6 +226,9 @@ struct TimingResult
 
     // Legacy: total fixed cost (phases 1-3, doesn't scale with paths)
     double jit_fixed_mean = 0;
+
+    // XAD-Split fixed cost (phases 1-2, no JIT compilation)
+    double xad_split_fixed_mean = 0;
 };
 
 // ============================================================================
@@ -232,7 +237,7 @@ struct TimingResult
 
 struct ValidationResult
 {
-    std::string method;           // "FD", "XAD", "JIT", "JITAVX"
+    std::string method;           // "FD", "XAD", "XADSPLIT", "JIT", "JITAVX"
     double pv = 0.0;              // Present value (price)
     std::vector<double> sensitivities;  // All sensitivities
 
@@ -333,10 +338,11 @@ inline void printBenchmarkHeader(const BenchmarkConfig& config, int benchmarkNum
 
     std::cout << "  METHODS\n";
     std::cout << "--------------------------------------------------------------------------------\n";
-    std::cout << "  FD       Finite Differences (bump-and-revalue, paths <= " << FD_MAX_PATHS << " only)\n";
-    std::cout << "  XAD      XAD tape-based reverse-mode AAD\n";
-    std::cout << "  JIT      Forge JIT-compiled native code\n";
-    std::cout << "  JIT-AVX  Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
+    std::cout << "  FD        Finite Differences (bump-and-revalue, paths <= " << FD_MAX_PATHS << " only)\n";
+    std::cout << "  XAD       XAD tape-based reverse-mode AAD\n";
+    std::cout << "  XAD-Split XAD with decoupled Jacobian + chain rule (no JIT)\n";
+    std::cout << "  JIT       Forge JIT-compiled native code\n";
+    std::cout << "  JIT-AVX   Forge JIT + AVX2 SIMD (4 paths/instruction)\n";
     std::cout << "\n";
 }
 
@@ -347,19 +353,20 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
     std::cout << "================================================================================\n";
     std::cout << "\n";
 
-    // Check if any JIT result has fixed cost data
-    bool hasJitFixed = false;
+    // Check if any JIT or XAD-Split result has fixed cost data
+    bool hasFixedCost = false;
     for (const auto& r : results)
     {
-        if (r.jit_enabled && r.jit_fixed_mean > 0)
+        if ((r.jit_enabled && r.jit_fixed_mean > 0) ||
+            (r.xad_split_enabled && r.xad_split_fixed_mean > 0))
         {
-            hasJitFixed = true;
+            hasFixedCost = true;
             break;
         }
     }
 
     // Table header
-    if (hasJitFixed)
+    if (hasFixedCost)
     {
         std::cout << "| Paths  |    Method |     Mean |   StdDev |  Setup* | Speedup |\n";
         std::cout << "|-------:|----------:|---------:|---------:|--------:|--------:|\n";
@@ -399,8 +406,8 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
             std::cout << " | " << std::setw(8) << std::fixed << std::setprecision(1) << mean;
             std::cout << " | " << std::setw(8) << std::fixed << std::setprecision(1) << stddev;
 
-            // Setup column (only shown when hasJitFixed is true)
-            if (hasJitFixed)
+            // Setup column (only shown when hasFixedCost is true)
+            if (hasFixedCost)
             {
                 if (showFixed && fixed_cost > 0)
                 {
@@ -426,13 +433,14 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
 
         printRow("FD", r.fd_mean, r.fd_std, r.fd_enabled);
         printRow("XAD", r.xad_mean, r.xad_std, r.xad_enabled);
+        printRow("XAD-Split", r.xad_split_mean, r.xad_split_std, r.xad_split_enabled, r.xad_split_fixed_mean, true);
         printRow("JIT", r.jit_mean, r.jit_std, r.jit_enabled, r.jit_fixed_mean, true);
         printRow("JIT-AVX", r.jit_avx_mean, r.jit_avx_std, r.jit_avx_enabled, r.jit_fixed_mean, true);
 
         // Separator between path count groups
         if (i < results.size() - 1)
         {
-            if (hasJitFixed)
+            if (hasFixedCost)
             {
                 std::cout << "|--------+-----------+----------+----------+---------+---------|\n";
             }
@@ -446,10 +454,10 @@ inline void printResultsTable(const std::vector<TimingResult>& results)
     std::cout << "\n";
     std::cout << "  All times in milliseconds (ms).\n";
     std::cout << "  Speedup = FD / Method (or XAD / Method when FD not available).\n";
-    if (hasJitFixed)
+    if (hasFixedCost)
     {
         std::cout << "\n";
-        std::cout << "  * Setup = one-time cost for JIT methods (curve bootstrap + Jacobian computation).\n";
+        std::cout << "  * Setup = one-time cost for XAD-Split/JIT methods (curve bootstrap + Jacobian).\n";
         std::cout << "    This cost is constant regardless of path count. The remaining time scales with paths.\n";
     }
     std::cout << "\n";

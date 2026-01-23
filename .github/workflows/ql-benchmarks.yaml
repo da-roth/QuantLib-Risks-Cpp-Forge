@@ -356,9 +356,9 @@ jobs:
               'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
           }
 
-          # Column display names (JIT columns have asterisk to indicate setup cost)
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
-          col_width = 11  # Width for each numeric column
+          # Column display names (JIT/XAD-Split columns have asterisk to indicate setup cost)
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          col_width = 12  # Width for each numeric column
 
           for config in configs:
               if config not in data:
@@ -372,7 +372,7 @@ jobs:
                   continue
 
               # Build header (no JIT-Setup column in main table)
-              method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+              method_order = ['FD', 'XAD', 'XADSPLIT', 'JIT', 'JITAVX']
               present_methods = [m for m in method_order if m in methods]
 
               header = f"{'Paths':>6}"
@@ -412,10 +412,10 @@ jobs:
               if config in validation and validation[config]:
                   val_methods = validation[config]
                   print(f"\nValidation (at 10K paths):\n")
-                  print(f"  {'Method':<8} {'PV':>14} {'Sens':>6} {'vs FD':>8} {'FD MaxDiff':>12} {'vs XAD':>8} {'XAD MaxDiff':>12}")
-                  print(f"  {'-'*70}")
+                  print(f"  {'Method':<10} {'PV':>14} {'Sens':>6} {'vs FD':>8} {'FD MaxDiff':>12} {'vs XAD':>8} {'XAD MaxDiff':>12}")
+                  print(f"  {'-'*72}")
 
-                  method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+                  method_order = ['FD', 'XAD', 'XADSPLIT', 'JIT', 'JITAVX']
                   fd_sens = val_methods.get('FD', (None, []))[1]
                   xad_sens = val_methods.get('XAD', (None, []))[1]
 
@@ -448,10 +448,10 @@ jobs:
                           vs_xad = '-'
                           xad_maxdiff = '-'
 
-                      print(f"  {m:<8} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
+                      print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
           print("\nAll times in milliseconds (ms).")
-          print("*JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
+          print("*XAD-Split, JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
           PYEOF
 
           python3 format_results.py \
@@ -768,8 +768,8 @@ jobs:
 
           configs = ['LITE', 'LITEEXT', 'PRODUCTION']
           names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITEEXT': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
-          col_width = 11
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          col_width = 12
 
           for config in configs:
               if config not in data: continue
@@ -778,7 +778,7 @@ jobs:
               all_paths = sorted(set(p for m in methods.values() for p in m.keys()))
               if not all_paths: continue
 
-              method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+              method_order = ['FD', 'XAD', 'XADSPLIT', 'JIT', 'JITAVX']
               present = [m for m in method_order if m in methods]
 
               header = f"{'Paths':>6}"
@@ -812,9 +812,9 @@ jobs:
               if config in validation and validation[config]:
                   val_methods = validation[config]
                   print(f"\nValidation (at 10K paths):\n")
-                  print(f"  {'Method':<8} {'PV':>14} {'Sens':>6} {'vs FD':>8} {'FD MaxDiff':>12} {'vs XAD':>8} {'XAD MaxDiff':>12}")
-                  print(f"  {'-'*70}")
-                  method_order = ['FD', 'XAD', 'JIT', 'JITAVX']
+                  print(f"  {'Method':<10} {'PV':>14} {'Sens':>6} {'vs FD':>8} {'FD MaxDiff':>12} {'vs XAD':>8} {'XAD MaxDiff':>12}")
+                  print(f"  {'-'*72}")
+                  method_order = ['FD', 'XAD', 'XADSPLIT', 'JIT', 'JITAVX']
                   fd_sens = val_methods.get('FD', (None, []))[1]
                   xad_sens = val_methods.get('XAD', (None, []))[1]
                   for m in method_order:
@@ -834,10 +834,10 @@ jobs:
                           vs_xad, xad_maxdiff = f"{match}/{total}", f"{maxd:.4f}%"
                       else:
                           vs_xad, xad_maxdiff = '-', '-'
-                      print(f"  {m:<8} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
+                      print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
           print("\nAll times in milliseconds (ms).")
-          print("*JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
+          print("*XAD-Split, JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
           '@
 
           $script | Out-File -FilePath format_results.py -Encoding utf8
