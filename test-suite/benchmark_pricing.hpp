@@ -476,24 +476,13 @@ RealType priceSwaptionDualCurve(const BenchmarkConfig& config,
             }
         }
 
-        // Discount factors using forward rates (for annuity calculation)
-        // This evolves with the Monte Carlo path
-        Array dis(config.size);
-        RealType df = RealType(1.0);
-        for (Size k = 0; k < config.size; ++k)
-        {
-            RealType accrual = setup.accrualEnd[k] - setup.accrualStart[k];
-            df = df / (RealType(1.0) + assetAtExercise[k] * accrual);
-            dis[k] = df;
-        }
-
-        // NPV calculation
-        // In dual-curve framework, annuity uses forward rates but final discounting uses OIS
+        // NPV calculation using OIS discount factors for discounting
+        // In dual-curve framework, we use OIS curve for discounting cashflows
         RealType npv = RealType(0.0);
         for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
         {
             RealType accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-            npv += (swapRate - assetAtExercise[m]) * accrual * dis[m];
+            npv += (swapRate - assetAtExercise[m]) * accrual * oisDiscountFactors[m];
         }
 
         // max(npv, 0) - use smooth approximation for AD types
