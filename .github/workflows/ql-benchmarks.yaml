@@ -472,7 +472,78 @@ jobs:
           cmake --install build
 
       # =========================================================================
-      # Benchmark 1: XAD + Forge (JIT enabled) - build and run first
+      # Benchmark 1: Plain double QuantLib (for FD benchmark)
+      # =========================================================================
+      - name: Configure QuantLib (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-double -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQLRISKS_DISABLE_AAD=ON ^
+            -DQLRISKS_BUILD_BENCHMARK_FD=ON
+
+      - name: Build FD benchmark (plain double)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-double
+          cmake --build . --target benchmark_fd
+
+      - name: Run FD Benchmark (plain double)
+        shell: cmd
+        run: |
+          echo ===== FD BENCHMARK (plain double QuantLib) =====
+          cd QuantLib\build-double
+          QuantLib-Risks-Cpp\test-suite\benchmark-fd.exe --all > fd_results.txt 2>&1
+          type fd_results.txt
+
+      # =========================================================================
+      # Benchmark 2: XAD (JIT disabled) for XAD tape AAD
+      # =========================================================================
+      - name: Configure QuantLib (XAD, JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib
+          cmake -B build-xad -G Ninja ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DXAD_WARNINGS_PARANOID=OFF ^
+            -DXAD_ENABLE_JIT=OFF ^
+            -DXAD_STATIC_MSVC_RUNTIME=ON ^
+            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\QuantLib-Risks-Cpp" ^
+            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
+            -DQL_NULL_AS_FUNCTIONS=ON ^
+            -DQL_BUILD_TEST_SUITE=OFF ^
+            -DQL_BUILD_EXAMPLES=OFF ^
+            -DQL_BUILD_BENCHMARK=OFF ^
+            -DQLRISKS_DISABLE_AAD=OFF ^
+            -DQLRISKS_BUILD_BENCHMARK_AAD=ON
+
+      - name: Build XAD benchmark (JIT off)
+        shell: cmd
+        run: |
+          call "%VSVARSALL%" x64
+          cd QuantLib\build-xad
+          cmake --build . --target benchmark_aad
+
+      - name: Run XAD Benchmark (JIT off)
+        shell: cmd
+        run: |
+          echo ===== XAD BENCHMARK (XAD tape, JIT disabled) =====
+          cd QuantLib\build-xad
+          QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --all --xad-only > xad_results.txt 2>&1
+          type xad_results.txt
+
+      # =========================================================================
+      # Benchmark 3: XAD + Forge (JIT enabled)
       # =========================================================================
       - name: Configure QuantLib (XAD + Forge)
         shell: cmd
@@ -515,76 +586,8 @@ jobs:
           type forge_results.txt
 
       # =========================================================================
-      # Benchmark 2: Plain double QuantLib (for FD benchmark)
+      # Combine and display results
       # =========================================================================
-      - name: Configure QuantLib (plain double)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib
-          cmake -B build-double -G Ninja ^
-            -DCMAKE_CXX_STANDARD=17 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DQL_BUILD_TEST_SUITE=OFF ^
-            -DQL_BUILD_EXAMPLES=OFF ^
-            -DQL_BUILD_BENCHMARK=OFF ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\QuantLib-Risks-Cpp" ^
-            -DQLRISKS_DISABLE_AAD=ON ^
-            -DQLRISKS_BUILD_BENCHMARK_FD=ON
-
-      - name: Build FD benchmark (plain double)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib\build-double
-          cmake --build . --target benchmark_fd
-
-      - name: Run FD Benchmark (plain double)
-        shell: cmd
-        run: |
-          echo ===== FD BENCHMARK (plain double QuantLib) =====
-          cd QuantLib\build-double
-          QuantLib-Risks-Cpp\test-suite\benchmark-fd.exe --all > fd_results.txt 2>&1
-          type fd_results.txt
-
-      # =========================================================================
-      # Benchmark 3: XAD (JIT disabled) for XAD tape AAD
-      # =========================================================================
-      - name: Configure QuantLib (XAD, JIT off)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib
-          cmake -B build-xad -G Ninja ^
-            -DCMAKE_CXX_STANDARD=17 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DXAD_WARNINGS_PARANOID=OFF ^
-            -DXAD_ENABLE_JIT=OFF ^
-            -DXAD_STATIC_MSVC_RUNTIME=ON ^
-            -DQL_EXTERNAL_SUBDIRECTORIES="%CD%\..\xad;%CD%\..\QuantLib-Risks-Cpp" ^
-            -DQL_EXTRA_LINK_LIBRARIES=QuantLib-Risks ^
-            -DQL_NULL_AS_FUNCTIONS=ON ^
-            -DQL_BUILD_TEST_SUITE=OFF ^
-            -DQL_BUILD_EXAMPLES=OFF ^
-            -DQL_BUILD_BENCHMARK=OFF ^
-            -DQLRISKS_DISABLE_AAD=OFF ^
-            -DQLRISKS_BUILD_BENCHMARK_AAD=ON
-
-      - name: Build XAD benchmark (JIT off)
-        shell: cmd
-        run: |
-          call "%VSVARSALL%" x64
-          cd QuantLib\build-xad
-          cmake --build . --target benchmark_aad
-
-      - name: Run XAD Benchmark (JIT off)
-        shell: cmd
-        run: |
-          echo ===== XAD BENCHMARK (XAD tape, JIT disabled) =====
-          cd QuantLib\build-xad
-          QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --all --xad-only > xad_results.txt 2>&1
-          type xad_results.txt
-
       - name: Generate Combined Report
         shell: pwsh
         run: |
