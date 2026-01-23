@@ -472,127 +472,11 @@ CurveSetupResult buildDualCurveAndJacobian(
 }
 
 // ============================================================================
-// XAD-Split Benchmark: Jacobian + XAD tape MC on intermediates + chain rule
+// XAD-Split Benchmark: Jacobian + per-path XAD tape MC + chain rule
 // ============================================================================
 
-// Helper function: Run MC simulation with intermediates as XAD inputs (Single-Curve)
-RealAD priceSwaptionFromIntermediates(
-    const BenchmarkConfig& config,
-    const LMMSetup& setup,
-    const std::vector<RealAD>& initRates,
-    const RealAD& swapRate,
-    const ext::shared_ptr<LiborForwardModelProcess>& process,
-    Size nrTrails)
-{
-    RealAD price = RealAD(0.0);
-
-    for (Size n = 0; n < nrTrails; ++n)
-    {
-        Array asset(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            asset[k] = initRates[k];
-
-        Array assetAtExercise(config.size);
-        for (Size step = 1; step <= setup.fullGridSteps; ++step)
-        {
-            Size offset = (step - 1) * setup.numFactors;
-            Time t = setup.grid[step - 1];
-            Time dt = setup.grid.dt(step - 1);
-
-            Array dw(setup.numFactors);
-            for (Size f = 0; f < setup.numFactors; ++f)
-                dw[f] = setup.allRandoms[n][offset + f];
-
-            asset = process->evolve(t, asset, dt, dw);
-
-            if (step == setup.exerciseStep)
-            {
-                for (Size k = 0; k < config.size; ++k)
-                    assetAtExercise[k] = asset[k];
-            }
-        }
-
-        // Discount factors
-        Array dis(config.size);
-        RealAD df = RealAD(1.0);
-        for (Size k = 0; k < config.size; ++k)
-        {
-            RealAD accrual = setup.accrualEnd[k] - setup.accrualStart[k];
-            df = df / (RealAD(1.0) + assetAtExercise[k] * accrual);
-            dis[k] = df;
-        }
-
-        // NPV
-        RealAD npv = RealAD(0.0);
-        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
-        {
-            RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-            npv += (swapRate - assetAtExercise[m]) * accrual * dis[m];
-        }
-
-        // max(npv, 0)
-        if (value(npv) > 0.0)
-            price += npv;
-    }
-
-    return price / RealAD(static_cast<double>(nrTrails));
-}
-
-// Helper function: Run MC simulation with intermediates as XAD inputs (Dual-Curve)
-RealAD priceSwaptionFromIntermediatesDualCurve(
-    const BenchmarkConfig& config,
-    const LMMSetup& setup,
-    const std::vector<RealAD>& initRates,
-    const RealAD& swapRate,
-    const std::vector<RealAD>& oisDiscounts,
-    const ext::shared_ptr<LiborForwardModelProcess>& process,
-    Size nrTrails)
-{
-    RealAD price = RealAD(0.0);
-
-    for (Size n = 0; n < nrTrails; ++n)
-    {
-        Array asset(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            asset[k] = initRates[k];
-
-        Array assetAtExercise(config.size);
-        for (Size step = 1; step <= setup.fullGridSteps; ++step)
-        {
-            Size offset = (step - 1) * setup.numFactors;
-            Time t = setup.grid[step - 1];
-            Time dt = setup.grid.dt(step - 1);
-
-            Array dw(setup.numFactors);
-            for (Size f = 0; f < setup.numFactors; ++f)
-                dw[f] = setup.allRandoms[n][offset + f];
-
-            asset = process->evolve(t, asset, dt, dw);
-
-            if (step == setup.exerciseStep)
-            {
-                for (Size k = 0; k < config.size; ++k)
-                    assetAtExercise[k] = asset[k];
-            }
-        }
-
-        // NPV using OIS discount factors
-        RealAD npv = RealAD(0.0);
-        for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
-        {
-            RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-            npv += (swapRate - assetAtExercise[m]) * accrual * oisDiscounts[m];
-        }
-
-        // max(npv, 0)
-        if (value(npv) > 0.0)
-            price += npv;
-    }
-
-    return price / RealAD(static_cast<double>(nrTrails));
-}
-
 // XAD-Split Benchmark (Single-Curve)
+// Uses per-path tape recording to avoid memory explosion at high path counts
 void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                           Size nrTrails, size_t warmup, size_t bench,
                           double& mean, double& stddev,
@@ -612,33 +496,98 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
         auto t_jacobian_end = Clock::now();
 
-        // Phase 2: MC simulation with intermediates as XAD inputs
+        // Phase 2: MC simulation with per-path tape (like JIT but interpreted)
+        // Create tape once, reuse with clearAll() for each path
         tape_type mcTape;
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(curve.numIntermediates, 0.0);
 
-        // Register intermediates as inputs
+        // Cache intermediate values as doubles
+        std::vector<double> initRatesVal(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            initRatesVal[k] = value(curve.initRates[k]);
+        double swapRateVal = value(curve.swapRate);
+
+        // Pre-allocate AD vectors (reused each path)
         std::vector<RealAD> initRatesAD(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            initRatesAD[k] = value(curve.initRates[k]);
-        RealAD swapRateAD = value(curve.swapRate);
+        RealAD swapRateAD;
 
-        mcTape.registerInputs(initRatesAD);
-        mcTape.registerInput(swapRateAD);
-        mcTape.newRecording();
+        for (Size n = 0; n < nrTrails; ++n)
+        {
+            // Clear tape for each path (reuses internal memory)
+            mcTape.clearAll();
 
-        // Run MC
-        RealAD price = priceSwaptionFromIntermediates(
-            config, setup, initRatesAD, swapRateAD, curve.process, nrTrails);
+            // Assign values and register inputs
+            for (Size k = 0; k < config.size; ++k)
+                initRatesAD[k] = initRatesVal[k];
+            swapRateAD = swapRateVal;
 
-        // Compute adjoints
-        mcTape.registerOutput(price);
-        derivative(price) = 1.0;
-        mcTape.computeAdjoints();
+            mcTape.registerInputs(initRatesAD);
+            mcTape.registerInput(swapRateAD);
+            mcTape.newRecording();
 
-        // Extract derivatives w.r.t. intermediates
-        std::vector<double> dPrice_dIntermediates(curve.numIntermediates);
-        for (Size k = 0; k < config.size; ++k)
-            dPrice_dIntermediates[k] = derivative(initRatesAD[k]);
-        dPrice_dIntermediates[config.size] = derivative(swapRateAD);
+            // Run single path
+            Array asset(config.size);
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = initRatesAD[k];
+
+            Array assetAtExercise(config.size);
+            for (Size step = 1; step <= setup.fullGridSteps; ++step)
+            {
+                Size offset = (step - 1) * setup.numFactors;
+                Time t = setup.grid[step - 1];
+                Time dt = setup.grid.dt(step - 1);
+
+                Array dw(setup.numFactors);
+                for (Size f = 0; f < setup.numFactors; ++f)
+                    dw[f] = setup.allRandoms[n][offset + f];
+
+                asset = curve.process->evolve(t, asset, dt, dw);
+
+                if (step == setup.exerciseStep)
+                {
+                    for (Size k = 0; k < config.size; ++k)
+                        assetAtExercise[k] = asset[k];
+                }
+            }
+
+            // Discount factors
+            Array dis(config.size);
+            RealAD df = RealAD(1.0);
+            for (Size k = 0; k < config.size; ++k)
+            {
+                RealAD accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+                df = df / (RealAD(1.0) + assetAtExercise[k] * accrual);
+                dis[k] = df;
+            }
+
+            // NPV
+            RealAD npv = RealAD(0.0);
+            for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+            {
+                RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+                npv += (swapRateAD - assetAtExercise[m]) * accrual * dis[m];
+            }
+
+            // max(npv, 0)
+            RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
+
+            // Compute adjoints for this path
+            mcTape.registerOutput(payoff);
+            derivative(payoff) = 1.0;
+            mcTape.computeAdjoints();
+
+            // Accumulate
+            mcPrice += value(payoff);
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[k] += derivative(initRatesAD[k]);
+            dPrice_dIntermediates[config.size] += derivative(swapRateAD);
+        }
+
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < curve.numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
 
         // Phase 3: Apply chain rule
         std::vector<double> finalDerivatives(curve.numMarketQuotes);
@@ -657,11 +606,9 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         if (validation && iter == 0)
         {
             validation->method = "XADSPLIT";
-            validation->pv = value(price);
+            validation->pv = mcPrice;
             validation->sensitivities = finalDerivatives;
         }
-
-        mcTape.clearAll();
     }
 
     mean = computeMean(times);
@@ -670,6 +617,7 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 }
 
 // XAD-Split Benchmark (Dual-Curve)
+// Uses per-path tape recording to avoid memory explosion at high path counts
 void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
                                     Size nrTrails, size_t warmup, size_t bench,
                                     double& mean, double& stddev,
@@ -689,39 +637,98 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
 
         auto t_jacobian_end = Clock::now();
 
-        // Phase 2: MC simulation with intermediates as XAD inputs
+        // Phase 2: MC simulation with per-path tape (like JIT but interpreted)
         tape_type mcTape;
+        double mcPrice = 0.0;
+        std::vector<double> dPrice_dIntermediates(curve.numIntermediates, 0.0);
 
-        // Register intermediates as inputs
+        // Cache intermediate values as doubles
+        std::vector<double> initRatesVal(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            initRatesVal[k] = value(curve.initRates[k]);
+        double swapRateVal = value(curve.swapRate);
+        std::vector<double> oisDiscountsVal(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            oisDiscountsVal[k] = value(curve.intermediates[config.size + 1 + k]);
+
+        // Pre-allocate AD vectors (reused each path)
         std::vector<RealAD> initRatesAD(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            initRatesAD[k] = value(curve.initRates[k]);
-        RealAD swapRateAD = value(curve.swapRate);
+        RealAD swapRateAD;
         std::vector<RealAD> oisDiscountsAD(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            oisDiscountsAD[k] = value(curve.intermediates[config.size + 1 + k]);
 
-        mcTape.registerInputs(initRatesAD);
-        mcTape.registerInput(swapRateAD);
-        mcTape.registerInputs(oisDiscountsAD);
-        mcTape.newRecording();
+        // Pre-allocate simulation arrays (reused each path)
+        Array asset(config.size);
+        Array assetAtExercise(config.size);
+        Array dw(setup.numFactors);
 
-        // Run MC
-        RealAD price = priceSwaptionFromIntermediatesDualCurve(
-            config, setup, initRatesAD, swapRateAD, oisDiscountsAD, curve.process, nrTrails);
+        for (Size n = 0; n < nrTrails; ++n)
+        {
+            // Clear tape for each path (reuses internal memory)
+            mcTape.clearAll();
 
-        // Compute adjoints
-        mcTape.registerOutput(price);
-        derivative(price) = 1.0;
-        mcTape.computeAdjoints();
+            // Assign values and register inputs
+            for (Size k = 0; k < config.size; ++k)
+                initRatesAD[k] = initRatesVal[k];
+            swapRateAD = swapRateVal;
+            for (Size k = 0; k < config.size; ++k)
+                oisDiscountsAD[k] = oisDiscountsVal[k];
 
-        // Extract derivatives w.r.t. intermediates
-        std::vector<double> dPrice_dIntermediates(curve.numIntermediates);
-        for (Size k = 0; k < config.size; ++k)
-            dPrice_dIntermediates[k] = derivative(initRatesAD[k]);
-        dPrice_dIntermediates[config.size] = derivative(swapRateAD);
-        for (Size k = 0; k < config.size; ++k)
-            dPrice_dIntermediates[config.size + 1 + k] = derivative(oisDiscountsAD[k]);
+            mcTape.registerInputs(initRatesAD);
+            mcTape.registerInput(swapRateAD);
+            mcTape.registerInputs(oisDiscountsAD);
+            mcTape.newRecording();
+
+            // Run single path - initialize asset from AD inputs
+            for (Size k = 0; k < config.size; ++k)
+                asset[k] = initRatesAD[k];
+
+            for (Size step = 1; step <= setup.fullGridSteps; ++step)
+            {
+                Size offset = (step - 1) * setup.numFactors;
+                Time t = setup.grid[step - 1];
+                Time dt = setup.grid.dt(step - 1);
+
+                for (Size f = 0; f < setup.numFactors; ++f)
+                    dw[f] = setup.allRandoms[n][offset + f];
+
+                asset = curve.process->evolve(t, asset, dt, dw);
+
+                if (step == setup.exerciseStep)
+                {
+                    for (Size k = 0; k < config.size; ++k)
+                        assetAtExercise[k] = asset[k];
+                }
+            }
+
+            // NPV using OIS discount factors
+            RealAD npv = RealAD(0.0);
+            for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+            {
+                RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+                npv += (swapRateAD - assetAtExercise[m]) * accrual * oisDiscountsAD[m];
+            }
+
+            // max(npv, 0)
+            RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
+
+            // Compute adjoints for this path
+            mcTape.registerOutput(payoff);
+            derivative(payoff) = 1.0;
+            mcTape.computeAdjoints();
+
+            // Accumulate
+            mcPrice += value(payoff);
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[k] += derivative(initRatesAD[k]);
+            dPrice_dIntermediates[config.size] += derivative(swapRateAD);
+            for (Size k = 0; k < config.size; ++k)
+                dPrice_dIntermediates[config.size + 1 + k] += derivative(oisDiscountsAD[k]);
+        }
+
+        // Average
+        mcPrice /= static_cast<double>(nrTrails);
+        for (Size k = 0; k < curve.numIntermediates; ++k)
+            dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
 
         // Phase 3: Apply chain rule
         std::vector<double> finalDerivatives(curve.numMarketQuotes);
@@ -740,11 +747,9 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
         if (validation && iter == 0)
         {
             validation->method = "XADSPLIT";
-            validation->pv = value(price);
+            validation->pv = mcPrice;
             validation->sensitivities = finalDerivatives;
         }
-
-        mcTape.clearAll();
     }
 
     mean = computeMean(times);
