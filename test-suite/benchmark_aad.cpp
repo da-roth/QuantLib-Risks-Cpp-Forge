@@ -508,37 +508,36 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             initRatesVal[k] = value(curve.initRates[k]);
         double swapRateVal = value(curve.swapRate);
 
-        // Pre-allocate AD vectors (reused each path)
-        std::vector<RealAD> initRatesAD(config.size);
-        RealAD swapRateAD;
+        // Pre-allocate simulation arrays (reused each path)
+        Array assetAtExercise(config.size);
+        Array dw(setup.numFactors);
 
         for (Size n = 0; n < nrTrails; ++n)
         {
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Assign values and register inputs
+            // Create fresh AD variables each path (following /xad benchmark pattern)
+            std::vector<RealAD> initRatesAD(config.size);
             for (Size k = 0; k < config.size; ++k)
                 initRatesAD[k] = initRatesVal[k];
-            swapRateAD = swapRateVal;
+            RealAD swapRateAD = swapRateVal;
 
             mcTape.registerInputs(initRatesAD);
             mcTape.registerInput(swapRateAD);
             mcTape.newRecording();
 
-            // Run single path
+            // Run single path - initialize asset from AD inputs
             Array asset(config.size);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = initRatesAD[k];
 
-            Array assetAtExercise(config.size);
             for (Size step = 1; step <= setup.fullGridSteps; ++step)
             {
                 Size offset = (step - 1) * setup.numFactors;
                 Time t = setup.grid[step - 1];
                 Time dt = setup.grid.dt(step - 1);
 
-                Array dw(setup.numFactors);
                 for (Size f = 0; f < setup.numFactors; ++f)
                     dw[f] = setup.allRandoms[n][offset + f];
 
@@ -651,13 +650,7 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
         for (Size k = 0; k < config.size; ++k)
             oisDiscountsVal[k] = value(curve.intermediates[config.size + 1 + k]);
 
-        // Pre-allocate AD vectors (reused each path)
-        std::vector<RealAD> initRatesAD(config.size);
-        RealAD swapRateAD;
-        std::vector<RealAD> oisDiscountsAD(config.size);
-
         // Pre-allocate simulation arrays (reused each path)
-        Array asset(config.size);
         Array assetAtExercise(config.size);
         Array dw(setup.numFactors);
 
@@ -666,10 +659,12 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Assign values and register inputs
+            // Create fresh AD variables each path (following /xad benchmark pattern)
+            std::vector<RealAD> initRatesAD(config.size);
             for (Size k = 0; k < config.size; ++k)
                 initRatesAD[k] = initRatesVal[k];
-            swapRateAD = swapRateVal;
+            RealAD swapRateAD = swapRateVal;
+            std::vector<RealAD> oisDiscountsAD(config.size);
             for (Size k = 0; k < config.size; ++k)
                 oisDiscountsAD[k] = oisDiscountsVal[k];
 
@@ -679,6 +674,7 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
             mcTape.newRecording();
 
             // Run single path - initialize asset from AD inputs
+            Array asset(config.size);
             for (Size k = 0; k < config.size; ++k)
                 asset[k] = initRatesAD[k];
 
