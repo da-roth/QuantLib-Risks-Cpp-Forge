@@ -472,6 +472,70 @@ CurveSetupResult buildDualCurveAndJacobian(
 }
 
 // ============================================================================
+// Shared Payoff Recording - used by both JIT and XAD-Split
+// ============================================================================
+
+// Variables holder for payoff computation (templated on AD type)
+template <typename ADType>
+struct PayoffVariables {
+    std::vector<ADType> initRates;
+    ADType swapRate;
+    std::vector<ADType> oisDiscounts;  // Empty for single-curve
+    std::vector<ADType> randoms;
+};
+
+// Compute the MC path payoff (shared between JIT and XAD-Split)
+template <typename ADType, bool UseDualCurve>
+ADType computePathPayoff(
+    const BenchmarkConfig& config,
+    const LMMSetup& setup,
+    const ext::shared_ptr<LiborForwardModelProcess>& process,
+    PayoffVariables<ADType>& vars)
+{
+    std::vector<ADType> asset(config.size);
+    std::vector<ADType> assetAtExercise(config.size);
+    for (Size k = 0; k < config.size; ++k)
+        asset[k] = vars.initRates[k];
+
+    for (Size step = 1; step <= setup.fullGridSteps; ++step)
+    {
+        Size offset = (step - 1) * setup.numFactors;
+        Array dw(setup.numFactors);
+        for (Size f = 0; f < setup.numFactors; ++f)
+            dw[f] = vars.randoms[offset + f];
+
+        Array asset_arr(config.size);
+        for (Size k = 0; k < config.size; ++k)
+            asset_arr[k] = asset[k];
+
+        Array evolved = process->evolve(setup.grid[step - 1], asset_arr, setup.grid.dt(step - 1), dw);
+        for (Size k = 0; k < config.size; ++k)
+            asset[k] = evolved[k];
+
+        if (step == setup.exerciseStep)
+            for (Size k = 0; k < config.size; ++k)
+                assetAtExercise[k] = asset[k];
+    }
+
+    std::vector<ADType> dis(config.size);
+    ADType df = ADType(1.0);
+    for (Size k = 0; k < config.size; ++k)
+    {
+        double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
+        df = df / (ADType(1.0) + assetAtExercise[k] * accrual);
+        dis[k] = UseDualCurve ? vars.oisDiscounts[k] : df;
+    }
+
+    ADType npv = ADType(0.0);
+    for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
+    {
+        double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
+        npv = npv + (vars.swapRate - assetAtExercise[m]) * accrual * dis[m];
+    }
+    return npv;
+}
+
+// ============================================================================
 // XAD-Split Benchmark: Jacobian + per-path XAD tape MC + chain rule
 // ============================================================================
 
@@ -496,79 +560,49 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
         auto t_jacobian_end = Clock::now();
 
-        // Phase 2: MC simulation with per-path tape (like JIT but interpreted)
-        // Create tape once, reuse with clearAll() for each path
+        // Phase 2: MC simulation with per-path XAD tape
+        // Same structure as JIT but re-record tape each path instead of executing compiled kernel
         tape_type mcTape;
         double mcPrice = 0.0;
         std::vector<double> dPrice_dIntermediates(curve.numIntermediates, 0.0);
 
-        // Cache intermediate values as doubles
+        // Cache intermediate values as doubles (same as JIT)
         std::vector<double> initRatesVal(config.size);
         for (Size k = 0; k < config.size; ++k)
             initRatesVal[k] = value(curve.initRates[k]);
         double swapRateVal = value(curve.swapRate);
-
-        // Pre-allocate simulation arrays (reused each path)
-        Array assetAtExercise(config.size);
-        Array dw(setup.numFactors);
 
         for (Size n = 0; n < nrTrails; ++n)
         {
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Create fresh AD variables each path (following /xad benchmark pattern)
-            std::vector<RealAD> initRatesAD(config.size);
-            for (Size k = 0; k < config.size; ++k)
-                initRatesAD[k] = initRatesVal[k];
-            RealAD swapRateAD = swapRateVal;
+            // Setup payoff variables (same structure as JIT)
+            PayoffVariables<RealAD> vars;
+            vars.initRates.resize(config.size);
+            vars.randoms.resize(setup.fullGridRandoms);
 
-            mcTape.registerInputs(initRatesAD);
-            mcTape.registerInput(swapRateAD);
+            // Register inputs: initRates, swapRate, randoms (same as JIT)
+            for (Size k = 0; k < config.size; ++k)
+            {
+                vars.initRates[k] = initRatesVal[k];
+                mcTape.registerInput(vars.initRates[k]);
+            }
+            vars.swapRate = swapRateVal;
+            mcTape.registerInput(vars.swapRate);
+
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+            {
+                vars.randoms[m] = setup.allRandoms[n][m];
+                mcTape.registerInput(vars.randoms[m]);
+            }
+
             mcTape.newRecording();
 
-            // Run single path - initialize asset from AD inputs
-            Array asset(config.size);
-            for (Size k = 0; k < config.size; ++k)
-                asset[k] = initRatesAD[k];
+            // Compute payoff using shared function (same computation as JIT)
+            RealAD npv = computePathPayoff<RealAD, false>(config, setup, curve.process, vars);
 
-            for (Size step = 1; step <= setup.fullGridSteps; ++step)
-            {
-                Size offset = (step - 1) * setup.numFactors;
-                Time t = setup.grid[step - 1];
-                Time dt = setup.grid.dt(step - 1);
-
-                for (Size f = 0; f < setup.numFactors; ++f)
-                    dw[f] = setup.allRandoms[n][offset + f];
-
-                asset = curve.process->evolve(t, asset, dt, dw);
-
-                if (step == setup.exerciseStep)
-                {
-                    for (Size k = 0; k < config.size; ++k)
-                        assetAtExercise[k] = asset[k];
-                }
-            }
-
-            // Discount factors
-            Array dis(config.size);
-            RealAD df = RealAD(1.0);
-            for (Size k = 0; k < config.size; ++k)
-            {
-                RealAD accrual = setup.accrualEnd[k] - setup.accrualStart[k];
-                df = df / (RealAD(1.0) + assetAtExercise[k] * accrual);
-                dis[k] = df;
-            }
-
-            // NPV
-            RealAD npv = RealAD(0.0);
-            for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
-            {
-                RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-                npv += (swapRateAD - assetAtExercise[m]) * accrual * dis[m];
-            }
-
-            // max(npv, 0)
+            // Payoff = max(npv, 0)
             RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
 
             // Compute adjoints for this path
@@ -576,11 +610,11 @@ void runXADSplitBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             derivative(payoff) = 1.0;
             mcTape.computeAdjoints();
 
-            // Accumulate
+            // Accumulate (same as JIT)
             mcPrice += value(payoff);
             for (Size k = 0; k < config.size; ++k)
-                dPrice_dIntermediates[k] += derivative(initRatesAD[k]);
-            dPrice_dIntermediates[config.size] += derivative(swapRateAD);
+                dPrice_dIntermediates[k] += derivative(vars.initRates[k]);
+            dPrice_dIntermediates[config.size] += derivative(vars.swapRate);
         }
 
         // Average
@@ -641,7 +675,7 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
         double mcPrice = 0.0;
         std::vector<double> dPrice_dIntermediates(curve.numIntermediates, 0.0);
 
-        // Cache intermediate values as doubles
+        // Cache intermediate values as doubles (same as JIT)
         std::vector<double> initRatesVal(config.size);
         for (Size k = 0; k < config.size; ++k)
             initRatesVal[k] = value(curve.initRates[k]);
@@ -650,59 +684,42 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
         for (Size k = 0; k < config.size; ++k)
             oisDiscountsVal[k] = value(curve.intermediates[config.size + 1 + k]);
 
-        // Pre-allocate simulation arrays (reused each path)
-        Array assetAtExercise(config.size);
-        Array dw(setup.numFactors);
-
         for (Size n = 0; n < nrTrails; ++n)
         {
             // Clear tape for each path (reuses internal memory)
             mcTape.clearAll();
 
-            // Create fresh AD variables each path (following /xad benchmark pattern)
-            std::vector<RealAD> initRatesAD(config.size);
-            for (Size k = 0; k < config.size; ++k)
-                initRatesAD[k] = initRatesVal[k];
-            RealAD swapRateAD = swapRateVal;
-            std::vector<RealAD> oisDiscountsAD(config.size);
-            for (Size k = 0; k < config.size; ++k)
-                oisDiscountsAD[k] = oisDiscountsVal[k];
+            // Setup payoff variables (same structure as JIT)
+            PayoffVariables<RealAD> vars;
+            vars.initRates.resize(config.size);
+            vars.oisDiscounts.resize(config.size);
+            vars.randoms.resize(setup.fullGridRandoms);
 
-            mcTape.registerInputs(initRatesAD);
-            mcTape.registerInput(swapRateAD);
-            mcTape.registerInputs(oisDiscountsAD);
+            // Register inputs: initRates, swapRate, oisDiscounts, randoms (same as JIT)
+            for (Size k = 0; k < config.size; ++k)
+            {
+                vars.initRates[k] = initRatesVal[k];
+                mcTape.registerInput(vars.initRates[k]);
+            }
+            vars.swapRate = swapRateVal;
+            mcTape.registerInput(vars.swapRate);
+
+            for (Size k = 0; k < config.size; ++k)
+            {
+                vars.oisDiscounts[k] = oisDiscountsVal[k];
+                mcTape.registerInput(vars.oisDiscounts[k]);
+            }
+
+            for (Size m = 0; m < setup.fullGridRandoms; ++m)
+            {
+                vars.randoms[m] = setup.allRandoms[n][m];
+                mcTape.registerInput(vars.randoms[m]);
+            }
+
             mcTape.newRecording();
 
-            // Run single path - initialize asset from AD inputs
-            Array asset(config.size);
-            for (Size k = 0; k < config.size; ++k)
-                asset[k] = initRatesAD[k];
-
-            for (Size step = 1; step <= setup.fullGridSteps; ++step)
-            {
-                Size offset = (step - 1) * setup.numFactors;
-                Time t = setup.grid[step - 1];
-                Time dt = setup.grid.dt(step - 1);
-
-                for (Size f = 0; f < setup.numFactors; ++f)
-                    dw[f] = setup.allRandoms[n][offset + f];
-
-                asset = curve.process->evolve(t, asset, dt, dw);
-
-                if (step == setup.exerciseStep)
-                {
-                    for (Size k = 0; k < config.size; ++k)
-                        assetAtExercise[k] = asset[k];
-                }
-            }
-
-            // NPV using OIS discount factors
-            RealAD npv = RealAD(0.0);
-            for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
-            {
-                RealAD accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-                npv += (swapRateAD - assetAtExercise[m]) * accrual * oisDiscountsAD[m];
-            }
+            // Compute payoff using shared function (same computation as JIT)
+            RealAD npv = computePathPayoff<RealAD, true>(config, setup, curve.process, vars);
 
             // max(npv, 0)
             RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
@@ -712,13 +729,13 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
             derivative(payoff) = 1.0;
             mcTape.computeAdjoints();
 
-            // Accumulate
+            // Accumulate (same as JIT)
             mcPrice += value(payoff);
             for (Size k = 0; k < config.size; ++k)
-                dPrice_dIntermediates[k] += derivative(initRatesAD[k]);
-            dPrice_dIntermediates[config.size] += derivative(swapRateAD);
+                dPrice_dIntermediates[k] += derivative(vars.initRates[k]);
+            dPrice_dIntermediates[config.size] += derivative(vars.swapRate);
             for (Size k = 0; k < config.size; ++k)
-                dPrice_dIntermediates[config.size + 1 + k] += derivative(oisDiscountsAD[k]);
+                dPrice_dIntermediates[config.size + 1 + k] += derivative(vars.oisDiscounts[k]);
         }
 
         // Average
@@ -753,107 +770,50 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
     fixed_cost_mean = computeMean(fixed_times);
 }
 
-// JIT variables holder for graph recording
-struct JITVariables {
-    std::vector<xad::AD> jit_initRates;
-    xad::AD jit_swapRate;
-    std::vector<xad::AD> jit_oisDiscounts;  // Empty for single-curve
-    std::vector<xad::AD> jit_randoms;
-};
-
 // Phase 2: Record JIT graph for payoff (unified single/dual-curve)
+// Uses shared computePathPayoff function
 template <bool UseDualCurve>
 void recordJITGraph(
     xad::JITCompiler<double>& jit,
     const BenchmarkConfig& config,
     const LMMSetup& setup,
     const CurveSetupResult& curve,
-    JITVariables& vars)
+    PayoffVariables<xad::AD>& vars)
 {
-    // Register JIT inputs: forward rates, swap rate, [OIS discounts if dual-curve], randoms
-    vars.jit_initRates.resize(config.size);
-    vars.jit_randoms.resize(setup.fullGridRandoms);
+    vars.initRates.resize(config.size);
+    vars.randoms.resize(setup.fullGridRandoms);
 
     for (Size k = 0; k < config.size; ++k)
     {
-        vars.jit_initRates[k] = xad::AD(value(curve.initRates[k]));
-        jit.registerInput(vars.jit_initRates[k]);
+        vars.initRates[k] = xad::AD(value(curve.initRates[k]));
+        jit.registerInput(vars.initRates[k]);
     }
-    vars.jit_swapRate = xad::AD(value(curve.swapRate));
-    jit.registerInput(vars.jit_swapRate);
+    vars.swapRate = xad::AD(value(curve.swapRate));
+    jit.registerInput(vars.swapRate);
 
     // Register OIS discount factors for dual-curve
     if constexpr (UseDualCurve)
     {
-        vars.jit_oisDiscounts.resize(config.size);
+        vars.oisDiscounts.resize(config.size);
         for (Size k = 0; k < config.size; ++k)
         {
-            vars.jit_oisDiscounts[k] = xad::AD(value(curve.intermediates[config.size + 1 + k]));
-            jit.registerInput(vars.jit_oisDiscounts[k]);
+            vars.oisDiscounts[k] = xad::AD(value(curve.intermediates[config.size + 1 + k]));
+            jit.registerInput(vars.oisDiscounts[k]);
         }
     }
 
     for (Size m = 0; m < setup.fullGridRandoms; ++m)
     {
-        vars.jit_randoms[m] = xad::AD(0.0);
-        jit.registerInput(vars.jit_randoms[m]);
+        vars.randoms[m] = xad::AD(0.0);
+        jit.registerInput(vars.randoms[m]);
     }
 
     jit.newRecording();
 
-    // Record path evolution
-    std::vector<xad::AD> asset(config.size);
-    std::vector<xad::AD> assetAtExercise(config.size);
-    for (Size k = 0; k < config.size; ++k)
-        asset[k] = vars.jit_initRates[k];
+    // Compute NPV using shared function (same computation as XAD-Split)
+    xad::AD npv = computePathPayoff<xad::AD, UseDualCurve>(config, setup, curve.process, vars);
 
-    for (Size step = 1; step <= setup.fullGridSteps; ++step)
-    {
-        Size offset = (step - 1) * setup.numFactors;
-        Time t = setup.grid[step - 1];
-        Time dt = setup.grid.dt(step - 1);
-
-        Array dw(setup.numFactors);
-        for (Size f = 0; f < setup.numFactors; ++f)
-            dw[f] = vars.jit_randoms[offset + f];
-
-        Array asset_arr(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            asset_arr[k] = asset[k];
-
-        Array evolved = curve.process->evolve(t, asset_arr, dt, dw);
-        for (Size k = 0; k < config.size; ++k)
-            asset[k] = evolved[k];
-
-        if (step == setup.exerciseStep)
-        {
-            for (Size k = 0; k < config.size; ++k)
-                assetAtExercise[k] = asset[k];
-        }
-    }
-
-    // Compute payoff: discount factors and NPV
-    std::vector<xad::AD> dis(config.size);
-    xad::AD df = xad::AD(1.0);
-    for (Size k = 0; k < config.size; ++k)
-    {
-        double accrual = setup.accrualEnd[k] - setup.accrualStart[k];
-        df = df / (xad::AD(1.0) + assetAtExercise[k] * accrual);
-        // Single-curve: use computed df; Dual-curve: use OIS discount factors
-        if constexpr (UseDualCurve)
-            dis[k] = vars.jit_oisDiscounts[k];
-        else
-            dis[k] = df;
-    }
-
-    xad::AD npv = xad::AD(0.0);
-    for (Size m = config.i_opt; m < config.i_opt + config.j_opt; ++m)
-    {
-        double accrual = setup.accrualEnd[m] - setup.accrualStart[m];
-        npv = npv + (vars.jit_swapRate - assetAtExercise[m]) * accrual * dis[m];
-    }
-
-    // Payoff = max(npv, 0)
+    // Payoff = max(npv, 0) - JIT uses xad::less().If() for JIT compatibility
     xad::AD payoff = xad::less(npv, xad::AD(0.0)).If(xad::AD(0.0), npv);
     jit.registerOutput(payoff);
 }
@@ -882,7 +842,7 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
         auto backend = std::make_unique<BackendType>(false);
         xad::JITCompiler<double> jit(std::move(backend));
 
-        JITVariables vars;
+        PayoffVariables<xad::AD> vars;
         recordJITGraph<false>(jit, config, setup, curve, vars);
 
         // Compile the JIT kernel
@@ -899,10 +859,10 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
         {
             // Set inputs
             for (Size k = 0; k < config.size; ++k)
-                value(vars.jit_initRates[k]) = value(curve.initRates[k]);
-            value(vars.jit_swapRate) = value(curve.swapRate);
+                value(vars.initRates[k]) = value(curve.initRates[k]);
+            value(vars.swapRate) = value(curve.swapRate);
             for (Size m = 0; m < setup.fullGridRandoms; ++m)
-                value(vars.jit_randoms[m]) = setup.allRandoms[n][m];
+                value(vars.randoms[m]) = setup.allRandoms[n][m];
 
             // Execute forward + backward
             double payoff_value;
@@ -980,7 +940,7 @@ void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
         // Phase 2: JIT graph recording (using JITCompiler to record only)
         xad::JITCompiler<double> jit;  // Default interpreter - just for recording
 
-        JITVariables vars;
+        PayoffVariables<xad::AD> vars;
         recordJITGraph<false>(jit, config, setup, curve, vars);
 
         // Get the JIT graph and deactivate
@@ -1119,7 +1079,7 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
         auto backend = std::make_unique<BackendType>(false);
         xad::JITCompiler<double> jit(std::move(backend));
 
-        JITVariables vars;
+        PayoffVariables<xad::AD> vars;
         recordJITGraph<true>(jit, config, setup, curve, vars);
 
         // Compile the JIT kernel
@@ -1138,12 +1098,12 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
         {
             // Set inputs
             for (Size k = 0; k < config.size; ++k)
-                value(vars.jit_initRates[k]) = value(curve.initRates[k]);
-            value(vars.jit_swapRate) = value(curve.swapRate);
+                value(vars.initRates[k]) = value(curve.initRates[k]);
+            value(vars.swapRate) = value(curve.swapRate);
             for (Size k = 0; k < config.size; ++k)
-                value(vars.jit_oisDiscounts[k]) = value(curve.intermediates[config.size + 1 + k]);
+                value(vars.oisDiscounts[k]) = value(curve.intermediates[config.size + 1 + k]);
             for (Size m = 0; m < setup.fullGridRandoms; ++m)
-                value(vars.jit_randoms[m]) = setup.allRandoms[n][m];
+                value(vars.randoms[m]) = setup.allRandoms[n][m];
 
             // Execute forward
             double payoff_value;
@@ -1242,7 +1202,7 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
         // Phase 2: JIT graph recording (using JITCompiler without backend)
         xad::JITCompiler<double> jit;  // Default constructor - for recording only
 
-        JITVariables vars;
+        PayoffVariables<xad::AD> vars;
         recordJITGraph<true>(jit, config, setup, curve, vars);
 
         // Get the JIT graph and deactivate
