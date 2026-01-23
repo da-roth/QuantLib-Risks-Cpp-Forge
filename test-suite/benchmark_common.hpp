@@ -227,6 +227,38 @@ struct TimingResult
 };
 
 // ============================================================================
+// Validation Results Structure (for comparing sensitivities across methods)
+// ============================================================================
+
+struct ValidationResult
+{
+    std::string method;           // "FD", "XAD", "JIT", "JITAVX"
+    double pv = 0.0;              // Present value (price)
+    std::vector<double> sensitivities;  // All sensitivities
+
+    ValidationResult() = default;
+    ValidationResult(const std::string& m, double p, const std::vector<double>& s)
+        : method(m), pv(p), sensitivities(s) {}
+};
+
+// Path count used for validation
+constexpr int VALIDATION_PATH_COUNT = 10000;
+
+// Output validation data in machine-parseable format
+// Format: VALIDATE_CONFIG_METHOD:pv;sens1,sens2,sens3,...
+inline void outputValidationData(const ValidationResult& result, const std::string& configId)
+{
+    std::cout << "VALIDATE_" << configId << "_" << result.method << ":"
+              << std::setprecision(12) << result.pv << ";";
+    for (size_t i = 0; i < result.sensitivities.size(); ++i)
+    {
+        if (i > 0) std::cout << ",";
+        std::cout << std::setprecision(12) << result.sensitivities[i];
+    }
+    std::cout << std::endl;
+}
+
+// ============================================================================
 // Output Formatting
 // ============================================================================
 

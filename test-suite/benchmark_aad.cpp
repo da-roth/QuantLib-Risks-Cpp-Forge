@@ -44,7 +44,8 @@ using tape_type = RealAD::tape_type;
 
 void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                      Size nrTrails, size_t warmup, size_t bench,
-                     double& mean, double& stddev)
+                     double& mean, double& stddev,
+                     ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
 
@@ -81,6 +82,18 @@ void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             times.push_back(DurationMs(t_end - t_start).count());
         }
 
+        // Capture validation data on first iteration (before clearing tape)
+        if (validation && iter == 0)
+        {
+            validation->method = "XAD";
+            validation->pv = value(price);
+            validation->sensitivities.resize(config.numMarketQuotes());
+            for (Size idx = 0; idx < config.numDeposits; ++idx)
+                validation->sensitivities[idx] = derivative(depositRates[idx]);
+            for (Size idx = 0; idx < config.numSwaps; ++idx)
+                validation->sensitivities[config.numDeposits + idx] = derivative(swapRatesAD[idx]);
+        }
+
         tape.clearAll();
     }
 
@@ -94,7 +107,8 @@ void runXADBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
 void runXADBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& setup,
                                Size nrTrails, size_t warmup, size_t bench,
-                               double& mean, double& stddev)
+                               double& mean, double& stddev,
+                               ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
 
@@ -140,6 +154,23 @@ void runXADBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
         if (iter >= warmup)
         {
             times.push_back(DurationMs(t_end - t_start).count());
+        }
+
+        // Capture validation data on first iteration (before clearing tape)
+        if (validation && iter == 0)
+        {
+            validation->method = "XAD";
+            validation->pv = value(price);
+            validation->sensitivities.resize(config.numMarketQuotes());
+            Size q = 0;
+            for (Size idx = 0; idx < config.numDeposits; ++idx)
+                validation->sensitivities[q++] = derivative(depositRates[idx]);
+            for (Size idx = 0; idx < config.numSwaps; ++idx)
+                validation->sensitivities[q++] = derivative(swapRatesAD[idx]);
+            for (Size idx = 0; idx < config.numOisDeposits; ++idx)
+                validation->sensitivities[q++] = derivative(oisDepoRates[idx]);
+            for (Size idx = 0; idx < config.numOisSwaps; ++idx)
+                validation->sensitivities[q++] = derivative(oisSwapRatesAD[idx]);
         }
 
         tape.clearAll();
@@ -653,7 +684,8 @@ void recordJITGraphDualCurve(
 template <typename BackendType>
 void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
                          Size nrTrails, size_t warmup, size_t bench,
-                         double& mean, double& stddev)
+                         double& mean, double& stddev,
+                         ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
 
@@ -723,8 +755,13 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
             times.push_back(DurationMs(t_end - t_start).count());
         }
 
-        (void)finalDerivatives;
-        (void)mcPrice;
+        // Capture validation data on first iteration
+        if (validation && iter == 0)
+        {
+            validation->method = "JIT";
+            validation->pv = mcPrice;
+            validation->sensitivities = finalDerivatives;
+        }
     }
 
     mean = computeMean(times);
@@ -733,10 +770,11 @@ void runJITBenchmarkImpl(const BenchmarkConfig& config, const LMMSetup& setup,
 
 void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                      Size nrTrails, size_t warmup, size_t bench,
-                     double& mean, double& stddev)
+                     double& mean, double& stddev,
+                     ValidationResult* validation = nullptr)
 {
     runJITBenchmarkImpl<xad::forge::ForgeBackend<double>>(
-        config, setup, nrTrails, warmup, bench, mean, stddev);
+        config, setup, nrTrails, warmup, bench, mean, stddev, validation);
 }
 
 // ============================================================================
@@ -872,7 +910,8 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
                                    Size nrTrails, size_t warmup, size_t bench,
                                    double& mean, double& stddev,
                                    double& phase1_curve_mean, double& phase2_jacobian_mean,
-                                   double& phase3_compile_mean)
+                                   double& phase3_compile_mean,
+                                   ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
     std::vector<double> phase1_times;  // Curve bootstrap + Jacobian
@@ -959,8 +998,13 @@ void runJITBenchmarkDualCurveImpl(const BenchmarkConfig& config, const LMMSetup&
             phase3_times.push_back(DurationMs(t_compile_end - t_curve_end).count());
         }
 
-        (void)finalDerivatives;
-        (void)mcPrice;
+        // Capture validation data on first iteration
+        if (validation && iter == 0)
+        {
+            validation->method = "JIT";
+            validation->pv = mcPrice;
+            validation->sensitivities = finalDerivatives;
+        }
     }
 
     mean = computeMean(times);
@@ -974,11 +1018,12 @@ void runJITBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& set
                                Size nrTrails, size_t warmup, size_t bench,
                                double& mean, double& stddev,
                                double& phase1_curve_mean, double& phase2_jacobian_mean,
-                               double& phase3_compile_mean)
+                               double& phase3_compile_mean,
+                               ValidationResult* validation = nullptr)
 {
     runJITBenchmarkDualCurveImpl<xad::forge::ForgeBackend<double>>(
         config, setup, nrTrails, warmup, bench, mean, stddev,
-        phase1_curve_mean, phase2_jacobian_mean, phase3_compile_mean);
+        phase1_curve_mean, phase2_jacobian_mean, phase3_compile_mean, validation);
 }
 
 // ============================================================================
@@ -1145,7 +1190,9 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
 // ============================================================================
 
 std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
-                                           bool quickMode, bool xadOnly)
+                                           bool quickMode, bool xadOnly,
+                                           ValidationResult* xadValidation = nullptr,
+                                           ValidationResult* jitValidation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -1181,9 +1228,13 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
             bench = quickMode ? 2 : config.benchmarkIterations;
         }
 
+        // Capture validation at VALIDATION_PATH_COUNT
+        bool captureValidation = (paths == VALIDATION_PATH_COUNT);
+
         // XAD tape
         runXADBenchmark(config, setup, nrTrails, warmup, bench,
-                        result.xad_mean, result.xad_std);
+                        result.xad_mean, result.xad_std,
+                        captureValidation ? xadValidation : nullptr);
         result.xad_enabled = true;
         std::cout << "XAD=" << std::fixed << std::setprecision(1) << result.xad_mean << "ms ";
 
@@ -1192,7 +1243,8 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
         {
             // Forge JIT
             runJITBenchmark(config, setup, nrTrails, warmup, bench,
-                            result.jit_mean, result.jit_std);
+                            result.jit_mean, result.jit_std,
+                            captureValidation ? jitValidation : nullptr);
             result.jit_enabled = true;
             std::cout << "JIT=" << result.jit_mean << "ms ";
 
@@ -1219,7 +1271,9 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 // ============================================================================
 
 std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config,
-                                                    bool quickMode, bool xadOnly)
+                                                    bool quickMode, bool xadOnly,
+                                                    ValidationResult* xadValidation = nullptr,
+                                                    ValidationResult* jitValidation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -1256,9 +1310,13 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
             bench = quickMode ? 2 : config.benchmarkIterations;
         }
 
+        // Capture validation at VALIDATION_PATH_COUNT
+        bool captureValidation = (paths == VALIDATION_PATH_COUNT);
+
         // XAD tape (dual-curve)
         runXADBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
-                                  result.xad_mean, result.xad_std);
+                                  result.xad_mean, result.xad_std,
+                                  captureValidation ? xadValidation : nullptr);
         result.xad_enabled = true;
         std::cout << "XAD=" << std::fixed << std::setprecision(1) << result.xad_mean << "ms ";
 
@@ -1269,7 +1327,8 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
             double jit_p1 = 0, jit_p2 = 0, jit_p3 = 0;
             runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                       result.jit_mean, result.jit_std,
-                                      jit_p1, jit_p2, jit_p3);
+                                      jit_p1, jit_p2, jit_p3,
+                                      captureValidation ? jitValidation : nullptr);
             result.jit_enabled = true;
             result.jit_phase1_curve_mean = jit_p1;
             result.jit_phase2_jacobian_mean = jit_p2;
@@ -1437,10 +1496,15 @@ int main(int argc, char* argv[])
         BenchmarkConfig liteConfig;
         printBenchmarkHeader(liteConfig, benchmarkNum++);
 
-        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly);
+        ValidationResult xadValidation, jitValidation;
+        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
         printResultsTable(results);
         printResultsFooter(liteConfig);
         outputResultsForParsing(results, liteConfig.configId);
+        if (!xadValidation.sensitivities.empty())
+            outputValidationData(xadValidation, liteConfig.configId);
+        if (!jitValidation.sensitivities.empty())
+            outputValidationData(jitValidation, liteConfig.configId);
     }
 
     if (runLiteExtended)
@@ -1449,10 +1513,15 @@ int main(int argc, char* argv[])
         liteExtConfig.setLiteExtendedConfig();
         printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly);
+        ValidationResult xadValidation, jitValidation;
+        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
         printResultsTable(results);
         printResultsFooter(liteExtConfig);
         outputResultsForParsing(results, liteExtConfig.configId);
+        if (!xadValidation.sensitivities.empty())
+            outputValidationData(xadValidation, liteExtConfig.configId);
+        if (!jitValidation.sensitivities.empty())
+            outputValidationData(jitValidation, liteExtConfig.configId);
     }
 
     if (runProduction)
@@ -1461,10 +1530,15 @@ int main(int argc, char* argv[])
         prodConfig.setProductionConfig();
         printBenchmarkHeader(prodConfig, benchmarkNum++);
 
-        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly);
+        ValidationResult xadValidation, jitValidation;
+        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
         printResultsTable(results);
         printResultsFooter(prodConfig);
         outputResultsForParsing(results, prodConfig.configId);
+        if (!xadValidation.sensitivities.empty())
+            outputValidationData(xadValidation, prodConfig.configId);
+        if (!jitValidation.sensitivities.empty())
+            outputValidationData(jitValidation, prodConfig.configId);
     }
 
     printFooter();

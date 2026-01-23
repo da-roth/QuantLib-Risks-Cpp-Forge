@@ -30,7 +30,8 @@ using DurationMs = std::chrono::duration<double, std::milli>;
 // FD Benchmark Runner (Single-Curve)
 // ============================================================================
 
-std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool quickMode)
+std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool quickMode,
+                                          ValidationResult* validation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -111,9 +112,11 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
                 fd_times.push_back(DurationMs(t_end - t_start).count());
             }
 
-            // Suppress unused warnings
-            (void)basePrice;
-            (void)derivatives;
+            // Capture validation data on first iteration at VALIDATION_PATH_COUNT
+            if (validation && paths == VALIDATION_PATH_COUNT && iter == 0)
+            {
+                *validation = ValidationResult("FD", basePrice, derivatives);
+            }
         }
 
         result.fd_mean = computeMean(fd_times);
@@ -134,7 +137,8 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
 // FD Benchmark Runner (Dual-Curve / Production)
 // ============================================================================
 
-std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config, bool quickMode)
+std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config, bool quickMode,
+                                                   ValidationResult* validation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -251,9 +255,11 @@ std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config,
                 fd_times.push_back(DurationMs(t_end - t_start).count());
             }
 
-            // Suppress unused warnings
-            (void)basePrice;
-            (void)derivatives;
+            // Capture validation data on first iteration at VALIDATION_PATH_COUNT
+            if (validation && paths == VALIDATION_PATH_COUNT && iter == 0)
+            {
+                *validation = ValidationResult("FD", basePrice, derivatives);
+            }
         }
 
         result.fd_mean = computeMean(fd_times);
@@ -364,10 +370,13 @@ int main(int argc, char* argv[])
         BenchmarkConfig liteConfig;
         printBenchmarkHeader(liteConfig, benchmarkNum++);
 
-        auto results = runFDBenchmark(liteConfig, quickMode);
+        ValidationResult validation;
+        auto results = runFDBenchmark(liteConfig, quickMode, &validation);
         printResultsTable(results);
         printResultsFooter(liteConfig);
         outputResultsForParsing(results, liteConfig.configId);
+        if (!validation.sensitivities.empty())
+            outputValidationData(validation, liteConfig.configId);
     }
 
     if (runLiteExtended)
@@ -376,10 +385,13 @@ int main(int argc, char* argv[])
         liteExtConfig.setLiteExtendedConfig();
         printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        auto results = runFDBenchmark(liteExtConfig, quickMode);
+        ValidationResult validation;
+        auto results = runFDBenchmark(liteExtConfig, quickMode, &validation);
         printResultsTable(results);
         printResultsFooter(liteExtConfig);
         outputResultsForParsing(results, liteExtConfig.configId);
+        if (!validation.sensitivities.empty())
+            outputValidationData(validation, liteExtConfig.configId);
     }
 
     if (runProduction)
@@ -388,10 +400,13 @@ int main(int argc, char* argv[])
         prodConfig.setProductionConfig();
         printBenchmarkHeader(prodConfig, benchmarkNum++);
 
-        auto results = runFDBenchmarkDualCurve(prodConfig, quickMode);
+        ValidationResult validation;
+        auto results = runFDBenchmarkDualCurve(prodConfig, quickMode, &validation);
         printResultsTable(results);
         printResultsFooter(prodConfig);
         outputResultsForParsing(results, prodConfig.configId);
+        if (!validation.sensitivities.empty())
+            outputValidationData(validation, prodConfig.configId);
     }
 
     printFooter();
