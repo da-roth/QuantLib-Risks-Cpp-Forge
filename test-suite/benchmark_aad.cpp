@@ -783,7 +783,8 @@ void runJITBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
 
 void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
                         Size nrTrails, size_t warmup, size_t bench,
-                        double& mean, double& stddev)
+                        double& mean, double& stddev,
+                        ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
 
@@ -893,8 +894,13 @@ void runJITAVXBenchmark(const BenchmarkConfig& config, const LMMSetup& setup,
             times.push_back(DurationMs(t_end - t_start).count());
         }
 
-        (void)finalDerivatives;
-        (void)mcPrice;
+        // Capture validation data on first iteration
+        if (validation && iter == 0)
+        {
+            validation->method = "JITAVX";
+            validation->pv = mcPrice;
+            validation->sensitivities = finalDerivatives;
+        }
     }
 
     mean = computeMean(times);
@@ -1034,7 +1040,8 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
                                   Size nrTrails, size_t warmup, size_t bench,
                                   double& mean, double& stddev,
                                   double& phase1_curve_mean, double& phase2_jacobian_mean,
-                                  double& phase3_compile_mean)
+                                  double& phase3_compile_mean,
+                                  ValidationResult* validation = nullptr)
 {
     std::vector<double> times;
     std::vector<double> phase1_times;  // Curve bootstrap + Jacobian
@@ -1172,8 +1179,13 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
             phase3_times.push_back(DurationMs(t_compile_end - t_curve_end).count());
         }
 
-        (void)finalDerivatives;
-        (void)mcPrice;
+        // Capture validation data on first iteration
+        if (validation && iter == 0)
+        {
+            validation->method = "JITAVX";
+            validation->pv = mcPrice;
+            validation->sensitivities = finalDerivatives;
+        }
     }
 
     mean = computeMean(times);
@@ -1192,7 +1204,8 @@ void runJITAVXBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup& 
 std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
                                            bool quickMode, bool xadOnly,
                                            ValidationResult* xadValidation = nullptr,
-                                           ValidationResult* jitValidation = nullptr)
+                                           ValidationResult* jitValidation = nullptr,
+                                           ValidationResult* jitAvxValidation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -1250,7 +1263,8 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 
             // Forge JIT-AVX (batched execution)
             runJITAVXBenchmark(config, setup, nrTrails, warmup, bench,
-                               result.jit_avx_mean, result.jit_avx_std);
+                               result.jit_avx_mean, result.jit_avx_std,
+                               captureValidation ? jitAvxValidation : nullptr);
             result.jit_avx_enabled = true;
             std::cout << "JIT-AVX=" << result.jit_avx_mean << "ms";
         }
@@ -1273,7 +1287,8 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
 std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config,
                                                     bool quickMode, bool xadOnly,
                                                     ValidationResult* xadValidation = nullptr,
-                                                    ValidationResult* jitValidation = nullptr)
+                                                    ValidationResult* jitValidation = nullptr,
+                                                    ValidationResult* jitAvxValidation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -1340,7 +1355,8 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
             double avx_p1 = 0, avx_p2 = 0, avx_p3 = 0;
             runJITAVXBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                          result.jit_avx_mean, result.jit_avx_std,
-                                         avx_p1, avx_p2, avx_p3);
+                                         avx_p1, avx_p2, avx_p3,
+                                         captureValidation ? jitAvxValidation : nullptr);
             result.jit_avx_enabled = true;
             std::cout << "JIT-AVX=" << result.jit_avx_mean << "ms";
         }
@@ -1496,8 +1512,8 @@ int main(int argc, char* argv[])
         BenchmarkConfig liteConfig;
         printBenchmarkHeader(liteConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation;
-        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
+        ValidationResult xadValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmark(liteConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(liteConfig);
         outputResultsForParsing(results, liteConfig.configId);
@@ -1505,6 +1521,8 @@ int main(int argc, char* argv[])
             outputValidationData(xadValidation, liteConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, liteConfig.configId);
+        if (!jitAvxValidation.sensitivities.empty())
+            outputValidationData(jitAvxValidation, liteConfig.configId);
     }
 
     if (runLiteExtended)
@@ -1513,8 +1531,8 @@ int main(int argc, char* argv[])
         liteExtConfig.setLiteExtendedConfig();
         printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation;
-        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
+        ValidationResult xadValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmark(liteExtConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(liteExtConfig);
         outputResultsForParsing(results, liteExtConfig.configId);
@@ -1522,6 +1540,8 @@ int main(int argc, char* argv[])
             outputValidationData(xadValidation, liteExtConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, liteExtConfig.configId);
+        if (!jitAvxValidation.sensitivities.empty())
+            outputValidationData(jitAvxValidation, liteExtConfig.configId);
     }
 
     if (runProduction)
@@ -1530,8 +1550,8 @@ int main(int argc, char* argv[])
         prodConfig.setProductionConfig();
         printBenchmarkHeader(prodConfig, benchmarkNum++);
 
-        ValidationResult xadValidation, jitValidation;
-        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly, &xadValidation, &jitValidation);
+        ValidationResult xadValidation, jitValidation, jitAvxValidation;
+        auto results = runAADBenchmarkDualCurve(prodConfig, quickMode, xadOnly, &xadValidation, &jitValidation, &jitAvxValidation);
         printResultsTable(results);
         printResultsFooter(prodConfig);
         outputResultsForParsing(results, prodConfig.configId);
@@ -1539,6 +1559,8 @@ int main(int argc, char* argv[])
             outputValidationData(xadValidation, prodConfig.configId);
         if (!jitValidation.sensitivities.empty())
             outputValidationData(jitValidation, prodConfig.configId);
+        if (!jitAvxValidation.sensitivities.empty())
+            outputValidationData(jitAvxValidation, prodConfig.configId);
     }
 
     printFooter();
