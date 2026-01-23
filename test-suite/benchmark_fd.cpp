@@ -27,11 +27,12 @@ using Clock = std::chrono::high_resolution_clock;
 using DurationMs = std::chrono::duration<double, std::milli>;
 
 // ============================================================================
-// FD Benchmark Runner (Single-Curve)
+// FD Benchmark Runner (unified single/dual-curve)
 // ============================================================================
 
-std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool quickMode,
-                                          ValidationResult* validation = nullptr)
+template <bool UseDualCurve>
+std::vector<TimingResult> runFDBenchmarkT(const BenchmarkConfig& config, bool quickMode,
+                                           ValidationResult* validation = nullptr)
 {
     std::vector<TimingResult> results;
 
@@ -39,7 +40,10 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
     LMMSetup setup(config);
 
     std::cout << "================================================================================\n";
-    std::cout << "  RUNNING FD BENCHMARKS\n";
+    if constexpr (UseDualCurve)
+        std::cout << "  RUNNING FD BENCHMARKS (Dual-Curve)\n";
+    else
+        std::cout << "  RUNNING FD BENCHMARKS\n";
     std::cout << "================================================================================\n";
     std::cout << "\n";
 
@@ -63,7 +67,10 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
         }
 
         std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
-                  << formatPathCount(paths) << " paths " << std::flush;
+                  << formatPathCount(paths) << " paths ";
+        if constexpr (UseDualCurve)
+            std::cout << "(" << config.numMarketQuotes() << " sensitivities) ";
+        std::cout << std::flush;
 
         std::vector<double> fd_times;
         double eps = 1e-5;
@@ -85,24 +92,78 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
             // Base rates as plain double
             std::vector<double> baseDepo(config.depoRates.begin(), config.depoRates.end());
             std::vector<double> baseSwap(config.swapRates.begin(), config.swapRates.end());
+            std::vector<double> baseOisDepo;
+            std::vector<double> baseOisSwap;
+            if constexpr (UseDualCurve)
+            {
+                baseOisDepo.assign(config.oisDepoRates.begin(), config.oisDepoRates.end());
+                baseOisSwap.assign(config.oisSwapRates.begin(), config.oisSwapRates.end());
+            }
 
             // Compute base price
-            double basePrice = priceSwaption<double>(config, setup, baseDepo, baseSwap, nrTrails);
+            double basePrice;
+            if constexpr (UseDualCurve)
+                basePrice = priceSwaptionDualCurve<double>(
+                    config, setup, baseDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
+            else
+                basePrice = priceSwaption<double>(config, setup, baseDepo, baseSwap, nrTrails);
 
             // Compute FD sensitivities (bump each rate)
             std::vector<double> derivatives(config.numMarketQuotes());
-            for (Size q = 0; q < config.numMarketQuotes(); ++q)
+            Size q = 0;
+
+            // Bump forecasting curve deposits
+            for (Size idx = 0; idx < config.numDeposits; ++idx, ++q)
             {
                 std::vector<double> bumpedDepo = baseDepo;
-                std::vector<double> bumpedSwap = baseSwap;
+                bumpedDepo[idx] += eps;
 
-                if (q < config.numDeposits)
-                    bumpedDepo[q] += eps;
+                double bumpedPrice;
+                if constexpr (UseDualCurve)
+                    bumpedPrice = priceSwaptionDualCurve<double>(
+                        config, setup, bumpedDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
                 else
-                    bumpedSwap[q - config.numDeposits] += eps;
-
-                double bumpedPrice = priceSwaption<double>(config, setup, bumpedDepo, bumpedSwap, nrTrails);
+                    bumpedPrice = priceSwaption<double>(config, setup, bumpedDepo, baseSwap, nrTrails);
                 derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            // Bump forecasting curve swaps
+            for (Size idx = 0; idx < config.numSwaps; ++idx, ++q)
+            {
+                std::vector<double> bumpedSwap = baseSwap;
+                bumpedSwap[idx] += eps;
+
+                double bumpedPrice;
+                if constexpr (UseDualCurve)
+                    bumpedPrice = priceSwaptionDualCurve<double>(
+                        config, setup, baseDepo, bumpedSwap, baseOisDepo, baseOisSwap, nrTrails);
+                else
+                    bumpedPrice = priceSwaption<double>(config, setup, baseDepo, bumpedSwap, nrTrails);
+                derivatives[q] = (bumpedPrice - basePrice) / eps;
+            }
+
+            // Bump discounting curve (OIS) for dual-curve only
+            if constexpr (UseDualCurve)
+            {
+                for (Size idx = 0; idx < config.numOisDeposits; ++idx, ++q)
+                {
+                    std::vector<double> bumpedOisDepo = baseOisDepo;
+                    bumpedOisDepo[idx] += eps;
+
+                    double bumpedPrice = priceSwaptionDualCurve<double>(
+                        config, setup, baseDepo, baseSwap, bumpedOisDepo, baseOisSwap, nrTrails);
+                    derivatives[q] = (bumpedPrice - basePrice) / eps;
+                }
+
+                for (Size idx = 0; idx < config.numOisSwaps; ++idx, ++q)
+                {
+                    std::vector<double> bumpedOisSwap = baseOisSwap;
+                    bumpedOisSwap[idx] += eps;
+
+                    double bumpedPrice = priceSwaptionDualCurve<double>(
+                        config, setup, baseDepo, baseSwap, baseOisDepo, bumpedOisSwap, nrTrails);
+                    derivatives[q] = (bumpedPrice - basePrice) / eps;
+                }
             }
 
             auto t_end = Clock::now();
@@ -133,147 +194,17 @@ std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool qui
     return results;
 }
 
-// ============================================================================
-// FD Benchmark Runner (Dual-Curve / Production)
-// ============================================================================
-
-std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config, bool quickMode,
-                                                   ValidationResult* validation = nullptr)
+// Convenience wrappers for backward compatibility
+inline std::vector<TimingResult> runFDBenchmark(const BenchmarkConfig& config, bool quickMode,
+                                                 ValidationResult* validation = nullptr)
 {
-    std::vector<TimingResult> results;
+    return runFDBenchmarkT<false>(config, quickMode, validation);
+}
 
-    // Setup LMM (pre-compute grid, randoms, etc.)
-    LMMSetup setup(config);
-
-    std::cout << "================================================================================\n";
-    std::cout << "  RUNNING FD BENCHMARKS (Dual-Curve)\n";
-    std::cout << "================================================================================\n";
-    std::cout << "\n";
-
-    const int maxFDPaths = config.getMaxFDPaths();
-
-    for (size_t tc = 0; tc < config.pathCounts.size(); ++tc)
-    {
-        int paths = config.pathCounts[tc];
-        Size nrTrails = static_cast<Size>(paths);
-
-        TimingResult result;
-        result.pathCount = paths;
-
-        // Only run FD for small path counts (more restrictive for production)
-        if (paths > maxFDPaths)
-        {
-            std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
-                      << formatPathCount(paths) << " paths - SKIPPED (paths > " << maxFDPaths << ")\n";
-            results.push_back(result);
-            continue;
-        }
-
-        std::cout << "  [" << (tc + 1) << "/" << config.pathCounts.size() << "] "
-                  << formatPathCount(paths) << " paths (" << config.numMarketQuotes()
-                  << " sensitivities) " << std::flush;
-
-        std::vector<double> fd_times;
-        double eps = 1e-5;
-
-        // For high path counts, skip warmup and run once (FD is expensive)
-        size_t warmup, bench;
-        if (paths >= 10000) {
-            warmup = 0;
-            bench = 1;
-        } else {
-            warmup = quickMode ? 1 : config.warmupIterations;
-            bench = quickMode ? 2 : config.benchmarkIterations;
-        }
-
-        for (size_t iter = 0; iter < warmup + bench; ++iter)
-        {
-            auto t_start = Clock::now();
-
-            // Base rates as plain double
-            std::vector<double> baseDepo(config.depoRates.begin(), config.depoRates.end());
-            std::vector<double> baseSwap(config.swapRates.begin(), config.swapRates.end());
-            std::vector<double> baseOisDepo(config.oisDepoRates.begin(), config.oisDepoRates.end());
-            std::vector<double> baseOisSwap(config.oisSwapRates.begin(), config.oisSwapRates.end());
-
-            // Compute base price using dual-curve pricing
-            double basePrice = priceSwaptionDualCurve<double>(
-                config, setup, baseDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
-
-            // Compute FD sensitivities (bump each rate)
-            std::vector<double> derivatives(config.numMarketQuotes());
-            Size q = 0;
-
-            // Bump forecasting curve deposits
-            for (Size idx = 0; idx < config.numDeposits; ++idx, ++q)
-            {
-                std::vector<double> bumpedDepo = baseDepo;
-                bumpedDepo[idx] += eps;
-
-                double bumpedPrice = priceSwaptionDualCurve<double>(
-                    config, setup, bumpedDepo, baseSwap, baseOisDepo, baseOisSwap, nrTrails);
-                derivatives[q] = (bumpedPrice - basePrice) / eps;
-            }
-
-            // Bump forecasting curve swaps
-            for (Size idx = 0; idx < config.numSwaps; ++idx, ++q)
-            {
-                std::vector<double> bumpedSwap = baseSwap;
-                bumpedSwap[idx] += eps;
-
-                double bumpedPrice = priceSwaptionDualCurve<double>(
-                    config, setup, baseDepo, bumpedSwap, baseOisDepo, baseOisSwap, nrTrails);
-                derivatives[q] = (bumpedPrice - basePrice) / eps;
-            }
-
-            // Bump discounting curve OIS deposits
-            for (Size idx = 0; idx < config.numOisDeposits; ++idx, ++q)
-            {
-                std::vector<double> bumpedOisDepo = baseOisDepo;
-                bumpedOisDepo[idx] += eps;
-
-                double bumpedPrice = priceSwaptionDualCurve<double>(
-                    config, setup, baseDepo, baseSwap, bumpedOisDepo, baseOisSwap, nrTrails);
-                derivatives[q] = (bumpedPrice - basePrice) / eps;
-            }
-
-            // Bump discounting curve OIS swaps
-            for (Size idx = 0; idx < config.numOisSwaps; ++idx, ++q)
-            {
-                std::vector<double> bumpedOisSwap = baseOisSwap;
-                bumpedOisSwap[idx] += eps;
-
-                double bumpedPrice = priceSwaptionDualCurve<double>(
-                    config, setup, baseDepo, baseSwap, baseOisDepo, bumpedOisSwap, nrTrails);
-                derivatives[q] = (bumpedPrice - basePrice) / eps;
-            }
-
-            auto t_end = Clock::now();
-
-            if (iter >= warmup)
-            {
-                fd_times.push_back(DurationMs(t_end - t_start).count());
-            }
-
-            // Capture validation data on first iteration at VALIDATION_PATH_COUNT
-            if (validation && paths == VALIDATION_PATH_COUNT && iter == 0)
-            {
-                *validation = ValidationResult("FD", basePrice, derivatives);
-            }
-        }
-
-        result.fd_mean = computeMean(fd_times);
-        result.fd_std = computeStddev(fd_times);
-        result.fd_enabled = true;
-
-        std::cout << "done (" << std::fixed << std::setprecision(1)
-                  << result.fd_mean << " ms)\n";
-
-        results.push_back(result);
-    }
-
-    std::cout << "\n";
-    return results;
+inline std::vector<TimingResult> runFDBenchmarkDualCurve(const BenchmarkConfig& config, bool quickMode,
+                                                          ValidationResult* validation = nullptr)
+{
+    return runFDBenchmarkT<true>(config, quickMode, validation);
 }
 
 // ============================================================================
