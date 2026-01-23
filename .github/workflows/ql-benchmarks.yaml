@@ -314,10 +314,10 @@ jobs:
                   pass
 
           # Print tables for each config
-          configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
+          configs = ['LITE', 'LITEEXT', 'PRODUCTION']
           config_names = {
               'LITE': 'Lite (1Y×1Y, 9 inputs)',
-              'LITE_EXTENDED': 'Lite-Extended (5Y×5Y, 14 inputs)',
+              'LITEEXT': 'Lite-Extended (5Y×5Y, 14 inputs)',
               'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
           }
 
@@ -656,8 +656,8 @@ jobs:
                               phases[config] = phase_data
               except: pass
 
-          configs = ['LITE', 'LITE_EXTENDED', 'PRODUCTION']
-          names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITE_EXTENDED': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
+          configs = ['LITE', 'LITEEXT', 'PRODUCTION']
+          names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITEEXT': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
           method_display = {'FD': 'FD', 'XAD': 'XAD', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
           col_width = 11
 

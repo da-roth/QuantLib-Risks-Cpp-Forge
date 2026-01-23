@@ -133,7 +133,7 @@ struct BenchmarkConfig
 
         instrumentDesc = "European swaption (5Y into 5Y)";
         benchmarkName = "Lite-Extended";
-        configId = "LITE_EXTENDED";
+        configId = "LITEEXT";
     }
 
     // Production config (5Y into 5Y, dual curve, ~47 sensitivities)
