@@ -485,6 +485,78 @@ struct PayoffVariables {
     std::vector<ADType> randoms;       // For JIT only; XAD-Split uses plain doubles
 };
 
+// Custom LMM evolve function using LOCAL arrays instead of process's mutable members.
+// This fixes XAD-Split tape recording issues caused by mutable state in process->evolve().
+// Implements the same predictor-corrector scheme as LiborForwardModelProcess::evolve().
+template <typename ADType, typename RandomsType>
+void evolveLMM(
+    std::vector<ADType>& asset,
+    const ext::shared_ptr<LiborForwardModelProcess>& process,
+    Time t0,
+    Time dt,
+    Size numFactors,
+    const RandomsType& randoms,
+    Size randomOffset)
+{
+    const Size size = asset.size();
+    const Size m = process->nextIndexReset(t0);
+    const ADType sdt = std::sqrt(dt);
+
+    // Get covariance parameters (these are constant, not AD)
+    Matrix diff = process->covarParam()->diffusion(t0, Array());
+    Matrix covariance = process->covarParam()->covariance(t0, Array());
+    const std::vector<Time>& accrualPeriod = process->accrualEndTimes();
+
+    // Compute accrual periods (accrualEnd[k] - accrualStart[k] approximation)
+    // Note: process stores accrualEndTimes and accrualStartTimes separately
+    // For simplicity, use the stored accrual periods from the coupon
+    std::vector<double> tau(size);
+    for (Size k = 0; k < size; ++k)
+    {
+        tau[k] = process->accrualEndTimes()[k] - process->accrualStartTimes()[k];
+    }
+
+    // LOCAL arrays for predictor-corrector (no mutable state!)
+    std::vector<ADType> m1(size);
+    std::vector<ADType> m2(size);
+
+    // Build dw from randoms
+    std::vector<ADType> dw(numFactors);
+    for (Size f = 0; f < numFactors; ++f)
+        dw[f] = randoms[randomOffset + f];
+
+    for (Size k = m; k < size; ++k)
+    {
+        // Predictor step
+        const ADType y = tau[k] * asset[k];
+        m1[k] = y / (ADType(1.0) + y);
+
+        // Drift term using m1
+        ADType drift1 = ADType(0.0);
+        for (Size j = m; j <= k; ++j)
+            drift1 = drift1 + m1[j] * covariance[j][k];
+        const ADType d = (drift1 - ADType(0.5) * covariance[k][k]) * dt;
+
+        // Diffusion term
+        ADType r = ADType(0.0);
+        for (Size f = 0; f < numFactors; ++f)
+            r = r + diff[k][f] * dw[f];
+        r = r * sdt;
+
+        // Corrector step
+        const ADType x = y * exp(d + r);
+        m2[k] = x / (ADType(1.0) + x);
+
+        // Drift term using m2
+        ADType drift2 = ADType(0.0);
+        for (Size j = m; j <= k; ++j)
+            drift2 = drift2 + m2[j] * covariance[j][k];
+
+        // Final evolved rate
+        asset[k] = asset[k] * exp(ADType(0.5) * (d + (drift2 - ADType(0.5) * covariance[k][k]) * dt) + r);
+    }
+}
+
 // Compute the MC path payoff (shared between JIT and XAD-Split)
 // RandomsType: std::vector<double> for XAD-Split, std::vector<xad::AD> for JIT
 template <typename ADType, bool UseDualCurve, typename RandomsType>
@@ -503,17 +575,11 @@ ADType computePathPayoff(
     for (Size step = 1; step <= setup.fullGridSteps; ++step)
     {
         Size offset = (step - 1) * setup.numFactors;
-        Array dw(setup.numFactors);
-        for (Size f = 0; f < setup.numFactors; ++f)
-            dw[f] = randoms[offset + f];
 
-        Array asset_arr(config.size);
-        for (Size k = 0; k < config.size; ++k)
-            asset_arr[k] = asset[k];
-
-        Array evolved = process->evolve(setup.grid[step - 1], asset_arr, setup.grid.dt(step - 1), dw);
-        for (Size k = 0; k < config.size; ++k)
-            asset[k] = evolved[k];
+        // Use custom evolveLMM with LOCAL arrays instead of process->evolve()
+        // This fixes XAD-Split tape recording issues
+        evolveLMM(asset, process, setup.grid[step - 1], setup.grid.dt(step - 1),
+                  setup.numFactors, randoms, offset);
 
         if (step == setup.exerciseStep)
             for (Size k = 0; k < config.size; ++k)
