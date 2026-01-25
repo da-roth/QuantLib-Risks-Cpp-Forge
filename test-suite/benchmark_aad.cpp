@@ -772,6 +772,18 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
 }
 
 // ============================================================================
+// Forward declaration for recordJITGraph (defined later)
+// ============================================================================
+
+template <bool UseDualCurve>
+void recordJITGraph(
+    xad::JITCompiler<double>& jit,
+    const BenchmarkConfig& config,
+    const LMMSetup& setup,
+    const CurveSetupResult& curve,
+    PayoffVariables<xad::AD>& vars);
+
+// ============================================================================
 // DIAGNOSTIC: Compare XAD-Split vs JIT derivatives step-by-step
 // ============================================================================
 
