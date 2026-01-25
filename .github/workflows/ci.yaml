@@ -19,13 +19,11 @@
 #
 ##############################################################################
 
-name: CI (disabled)
+name: CI
 
-# NOTE: Automatic triggers disabled
-# To re-enable, uncomment the push/pull_request lines below
 on:
-  # push:
-  # pull_request:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
       ql_repo:
