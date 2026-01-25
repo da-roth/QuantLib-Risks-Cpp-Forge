@@ -106,6 +106,14 @@ while [[ $# -gt 0 ]]; do
             BENCHMARK_ARGS="$BENCHMARK_ARGS $1"
             shift
             ;;
+        --fast)
+            BENCHMARK_ARGS="$BENCHMARK_ARGS --max-paths=10000"
+            shift
+            ;;
+        --max-paths=*)
+            BENCHMARK_ARGS="$BENCHMARK_ARGS $1"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -125,6 +133,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --lite             Run lite benchmark only"
             echo "  --lite-extended    Run lite-extended benchmark only"
             echo "  --production       Run production benchmark only"
+            echo "  --fast             Limit to 10K paths max (skip 100K)"
+            echo "  --max-paths=N      Limit max path count"
             echo ""
             echo "Examples:"
             echo "  $0 --build-forge-api --all   # First time: build Forge API + full build"

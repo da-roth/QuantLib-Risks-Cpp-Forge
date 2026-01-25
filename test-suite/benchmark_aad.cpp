@@ -1868,6 +1868,7 @@ int main(int argc, char* argv[])
     bool xadOnly = false;
     bool runDiagnose = false;
     Size diagnosePaths = 100;
+    int maxPaths = 0;  // 0 = no limit
 
     // Parse arguments
     for (int i = 1; i < argc; ++i)
@@ -1911,6 +1912,10 @@ int main(int argc, char* argv[])
         {
             diagnosePaths = static_cast<Size>(std::atoi(argv[i] + 17));
         }
+        else if (strncmp(argv[i], "--max-paths=", 12) == 0)
+        {
+            maxPaths = std::atoi(argv[i] + 12);
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             std::cout << "Usage: " << argv[0] << " [options]\n";
@@ -1923,6 +1928,7 @@ int main(int argc, char* argv[])
             std::cout << "  --xad-only       Run only XAD tape (no JIT)\n";
             std::cout << "  --diagnose       Run diagnostic comparison of XAD-Split vs JIT\n";
             std::cout << "  --diagnose-paths=N  Number of paths for diagnostic (default: 100)\n";
+            std::cout << "  --max-paths=N    Limit max paths (e.g., 10000 to skip 100K)\n";
             std::cout << "  --help           Show this message\n";
             std::cout << "\n";
             std::cout << "Default: runs lite and lite-extended (not production)\n";
@@ -1970,9 +1976,21 @@ int main(int argc, char* argv[])
 
     int benchmarkNum = 1;
 
+    // Helper lambda to filter pathCounts based on maxPaths
+    auto filterPathCounts = [maxPaths](BenchmarkConfig& config) {
+        if (maxPaths > 0) {
+            std::vector<int> filtered;
+            for (int p : config.pathCounts) {
+                if (p <= maxPaths) filtered.push_back(p);
+            }
+            config.pathCounts = filtered;
+        }
+    };
+
     if (runLite)
     {
         BenchmarkConfig liteConfig;
+        filterPathCounts(liteConfig);
         printBenchmarkHeader(liteConfig, benchmarkNum++);
 
         ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
@@ -1995,6 +2013,7 @@ int main(int argc, char* argv[])
     {
         BenchmarkConfig liteExtConfig;
         liteExtConfig.setLiteExtendedConfig();
+        filterPathCounts(liteExtConfig);
         printBenchmarkHeader(liteExtConfig, benchmarkNum++);
 
         ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
@@ -2017,6 +2036,7 @@ int main(int argc, char* argv[])
     {
         BenchmarkConfig prodConfig;
         prodConfig.setProductionConfig();
+        filterPathCounts(prodConfig);
         printBenchmarkHeader(prodConfig, benchmarkNum++);
 
         ValidationResult xadValidation, xadSplitValidation, jitValidation, jitAvxValidation;
