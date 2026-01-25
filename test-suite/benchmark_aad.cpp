@@ -492,28 +492,27 @@ template <typename ADType, typename RandomsType>
 void evolveLMM(
     std::vector<ADType>& asset,
     const ext::shared_ptr<LiborForwardModelProcess>& process,
-    Time t0,
-    Time dt,
+    double t0,
+    double dt,
     Size numFactors,
     const RandomsType& randoms,
     Size randomOffset)
 {
     const Size size = asset.size();
     const Size m = process->nextIndexReset(t0);
-    const ADType sdt = std::sqrt(dt);
+    const ADType sdt = ADType(std::sqrt(dt));
 
     // Get covariance parameters (these are constant, not AD)
     Matrix diff = process->covarParam()->diffusion(t0, Array());
     Matrix covariance = process->covarParam()->covariance(t0, Array());
-    const std::vector<Time>& accrualPeriod = process->accrualEndTimes();
 
-    // Compute accrual periods (accrualEnd[k] - accrualStart[k] approximation)
-    // Note: process stores accrualEndTimes and accrualStartTimes separately
-    // For simplicity, use the stored accrual periods from the coupon
+    // Get accrual periods (constants, not AD)
+    const std::vector<Time>& accrualStart = process->accrualStartTimes();
+    const std::vector<Time>& accrualEnd = process->accrualEndTimes();
     std::vector<double> tau(size);
     for (Size k = 0; k < size; ++k)
     {
-        tau[k] = process->accrualEndTimes()[k] - process->accrualStartTimes()[k];
+        tau[k] = value(accrualEnd[k]) - value(accrualStart[k]);
     }
 
     // LOCAL arrays for predictor-corrector (no mutable state!)
@@ -577,9 +576,10 @@ ADType computePathPayoff(
         Size offset = (step - 1) * setup.numFactors;
 
         // Use custom evolveLMM with LOCAL arrays instead of process->evolve()
-        // This fixes XAD-Split tape recording issues
-        evolveLMM(asset, process, setup.grid[step - 1], setup.grid.dt(step - 1),
-                  setup.numFactors, randoms, offset);
+        // This fixes XAD-Split tape recording issues caused by mutable member arrays
+        double t0 = value(setup.grid[step - 1]);
+        double dt = value(setup.grid.dt(step - 1));
+        evolveLMM(asset, process, t0, dt, setup.numFactors, randoms, offset);
 
         if (step == setup.exerciseStep)
             for (Size k = 0; k < config.size; ++k)
