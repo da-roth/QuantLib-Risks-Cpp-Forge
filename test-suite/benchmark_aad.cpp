@@ -29,6 +29,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 
 using namespace benchmark;
 using Clock = std::chrono::high_resolution_clock;
@@ -768,6 +769,243 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
     mean = computeMean(times);
     stddev = computeStddev(times);
     fixed_cost_mean = computeMean(fixed_times);
+}
+
+// ============================================================================
+// DIAGNOSTIC: Compare XAD-Split vs JIT derivatives step-by-step
+// ============================================================================
+
+void runDiagnosticComparison(const BenchmarkConfig& config, const LMMSetup& setup, Size nrTrails)
+{
+    std::cout << "\n";
+    std::cout << "================================================================================\n";
+    std::cout << "  DIAGNOSTIC: XAD-Split vs JIT Derivative Comparison\n";
+    std::cout << "================================================================================\n";
+    std::cout << "  Config: size=" << config.size << ", numDeposits=" << config.numDeposits
+              << ", numSwaps=" << config.numSwaps << ", paths=" << nrTrails << "\n";
+    std::cout << "  numIntermediates = " << (config.size + 1) << " (forward rates + swap rate)\n";
+    std::cout << "  numMarketQuotes = " << config.numMarketQuotes() << "\n";
+    std::cout << std::endl;
+
+    // =========================================================================
+    // Phase 1: Build curve and Jacobian (should be identical for both)
+    // =========================================================================
+    tape_type jacobianTape;
+    CurveSetupResult curve = buildSingleCurveAndJacobian(config, setup, jacobianTape);
+
+    std::cout << "  [Phase 1] Curve Bootstrap & Jacobian\n";
+    std::cout << "  -------------------------------------\n";
+    std::cout << "  Intermediate values (initRates + swapRate):\n";
+    for (Size k = 0; k < config.size; ++k)
+        std::cout << "    initRates[" << k << "] = " << value(curve.initRates[k]) << "\n";
+    std::cout << "    swapRate     = " << value(curve.swapRate) << "\n";
+    std::cout << std::endl;
+
+    // Print Jacobian (first few rows/cols for brevity)
+    std::cout << "  Jacobian (dIntermediate/dMarket) - first 5 rows, all cols:\n";
+    Size printRows = std::min(curve.numIntermediates, Size(5));
+    for (Size i = 0; i < printRows; ++i) {
+        std::cout << "    Row " << i << ": ";
+        for (Size j = 0; j < curve.numMarketQuotes; ++j) {
+            std::cout << std::setw(12) << std::scientific << std::setprecision(4)
+                      << curve.jacobian[i * curve.numMarketQuotes + j] << " ";
+        }
+        std::cout << "\n";
+    }
+    if (curve.numIntermediates > 5) std::cout << "    ... (more rows)\n";
+    std::cout << "    Row " << config.size << " (swapRate): ";
+    for (Size j = 0; j < curve.numMarketQuotes; ++j) {
+        std::cout << std::setw(12) << std::scientific << std::setprecision(4)
+                  << curve.jacobian[config.size * curve.numMarketQuotes + j] << " ";
+    }
+    std::cout << "\n\n";
+
+    // =========================================================================
+    // Phase 2a: XAD-Split - per-path tape MC
+    // =========================================================================
+    std::cout << "  [Phase 2] MC Simulation - Per-path derivatives\n";
+    std::cout << "  -----------------------------------------------\n";
+
+    tape_type mcTape;
+    double xadsplit_mcPrice = 0.0;
+    std::vector<double> xadsplit_dPrice_dIntermediates(curve.numIntermediates, 0.0);
+    std::vector<double> initRatesVal(config.size);
+    for (Size k = 0; k < config.size; ++k)
+        initRatesVal[k] = value(curve.initRates[k]);
+    double swapRateVal = value(curve.swapRate);
+
+    // Store per-path derivatives for comparison
+    std::vector<std::vector<double>> xadsplit_path_derivs(nrTrails);
+
+    for (Size n = 0; n < nrTrails; ++n)
+    {
+        mcTape.clearAll();
+
+        PayoffVariables<RealAD> vars;
+        vars.initRates.resize(config.size);
+
+        for (Size k = 0; k < config.size; ++k) {
+            vars.initRates[k] = initRatesVal[k];
+            mcTape.registerInput(vars.initRates[k]);
+        }
+        vars.swapRate = swapRateVal;
+        mcTape.registerInput(vars.swapRate);
+
+        mcTape.newRecording();
+
+        RealAD npv = computePathPayoff<RealAD, false>(config, setup, curve.process, vars, setup.allRandoms[n]);
+        RealAD payoff = (value(npv) > 0.0) ? npv : RealAD(0.0);
+
+        mcTape.registerOutput(payoff);
+        derivative(payoff) = 1.0;
+        mcTape.computeAdjoints();
+
+        xadsplit_mcPrice += value(payoff);
+        xadsplit_path_derivs[n].resize(curve.numIntermediates);
+        for (Size k = 0; k < config.size; ++k) {
+            double d = derivative(vars.initRates[k]);
+            xadsplit_dPrice_dIntermediates[k] += d;
+            xadsplit_path_derivs[n][k] = d;
+        }
+        double d_swap = derivative(vars.swapRate);
+        xadsplit_dPrice_dIntermediates[config.size] += d_swap;
+        xadsplit_path_derivs[n][config.size] = d_swap;
+    }
+
+    xadsplit_mcPrice /= static_cast<double>(nrTrails);
+    for (Size k = 0; k < curve.numIntermediates; ++k)
+        xadsplit_dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+    // =========================================================================
+    // Phase 2b: JIT - compiled kernel MC
+    // =========================================================================
+    auto backend = std::make_unique<xad::forge::ForgeBackend<double>>(false);
+    xad::JITCompiler<double> jit(std::move(backend));
+
+    PayoffVariables<xad::AD> jit_vars;
+    recordJITGraph<false>(jit, config, setup, curve, jit_vars);
+    jit.compile();
+
+    const auto& graph = jit.getGraph();
+    uint32_t outputSlot = graph.output_ids[0];
+
+    double jit_mcPrice = 0.0;
+    std::vector<double> jit_dPrice_dIntermediates(curve.numIntermediates, 0.0);
+    std::vector<std::vector<double>> jit_path_derivs(nrTrails);
+
+    for (Size n = 0; n < nrTrails; ++n)
+    {
+        for (Size k = 0; k < config.size; ++k)
+            value(jit_vars.initRates[k]) = value(curve.initRates[k]);
+        value(jit_vars.swapRate) = value(curve.swapRate);
+        for (Size m = 0; m < setup.fullGridRandoms; ++m)
+            value(jit_vars.randoms[m]) = setup.allRandoms[n][m];
+
+        double payoff_value;
+        jit.forward(&payoff_value);
+        jit_mcPrice += payoff_value;
+
+        jit.clearDerivatives();
+        jit.setDerivative(outputSlot, 1.0);
+        jit.computeAdjoints();
+
+        jit_path_derivs[n].resize(curve.numIntermediates);
+        for (Size k = 0; k < config.size; ++k) {
+            double d = jit.derivative(graph.input_ids[k]);
+            jit_dPrice_dIntermediates[k] += d;
+            jit_path_derivs[n][k] = d;
+        }
+        double d_swap = jit.derivative(graph.input_ids[config.size]);
+        jit_dPrice_dIntermediates[config.size] += d_swap;
+        jit_path_derivs[n][config.size] = d_swap;
+    }
+
+    jit_mcPrice /= static_cast<double>(nrTrails);
+    for (Size k = 0; k < curve.numIntermediates; ++k)
+        jit_dPrice_dIntermediates[k] /= static_cast<double>(nrTrails);
+
+    // =========================================================================
+    // Compare per-path derivatives (first few paths)
+    // =========================================================================
+    Size printPaths = std::min(nrTrails, Size(5));
+    std::cout << "  Per-path derivatives (first " << printPaths << " paths):\n";
+    for (Size n = 0; n < printPaths; ++n) {
+        std::cout << "  Path " << n << ":\n";
+        std::cout << "    Intermediate |    XAD-Split |         JIT |      Diff |   Ratio\n";
+        std::cout << "    -------------+-------------+-------------+-----------+---------\n";
+        for (Size k = 0; k < curve.numIntermediates; ++k) {
+            double xs = xadsplit_path_derivs[n][k];
+            double jt = jit_path_derivs[n][k];
+            double diff = xs - jt;
+            double ratio = (std::abs(jt) > 1e-15) ? xs / jt : 0.0;
+            std::string name = (k < config.size) ? "initRates[" + std::to_string(k) + "]" : "swapRate";
+            std::cout << "    " << std::setw(12) << name << " | "
+                      << std::setw(11) << std::scientific << std::setprecision(4) << xs << " | "
+                      << std::setw(11) << jt << " | "
+                      << std::setw(9) << diff << " | "
+                      << std::fixed << std::setprecision(4) << ratio << "\n";
+        }
+        std::cout << "\n";
+    }
+
+    // =========================================================================
+    // Compare averaged dPrice_dIntermediates
+    // =========================================================================
+    std::cout << "  [Phase 3] Averaged dPrice/dIntermediates (over " << nrTrails << " paths):\n";
+    std::cout << "  -----------------------------------------------------------------\n";
+    std::cout << "  Intermediate |    XAD-Split |         JIT |      Diff |   Ratio\n";
+    std::cout << "  -------------+-------------+-------------+-----------+---------\n";
+    for (Size k = 0; k < curve.numIntermediates; ++k) {
+        double xs = xadsplit_dPrice_dIntermediates[k];
+        double jt = jit_dPrice_dIntermediates[k];
+        double diff = xs - jt;
+        double ratio = (std::abs(jt) > 1e-15) ? xs / jt : 0.0;
+        std::string name = (k < config.size) ? "initRates[" + std::to_string(k) + "]" : "swapRate";
+        std::cout << "  " << std::setw(12) << name << " | "
+                  << std::setw(11) << std::scientific << std::setprecision(4) << xs << " | "
+                  << std::setw(11) << jt << " | "
+                  << std::setw(9) << diff << " | "
+                  << std::fixed << std::setprecision(4) << ratio << "\n";
+    }
+    std::cout << "\n";
+
+    // =========================================================================
+    // Phase 4: Apply chain rule and compare final sensitivities
+    // =========================================================================
+    std::vector<double> xadsplit_final(curve.numMarketQuotes);
+    std::vector<double> jit_final(curve.numMarketQuotes);
+    applyChainRule(curve.jacobian.data(), xadsplit_dPrice_dIntermediates.data(), xadsplit_final.data(),
+                   curve.numIntermediates, curve.numMarketQuotes);
+    applyChainRule(curve.jacobian.data(), jit_dPrice_dIntermediates.data(), jit_final.data(),
+                   curve.numIntermediates, curve.numMarketQuotes);
+
+    std::cout << "  [Phase 4] Final Market Sensitivities (after chain rule):\n";
+    std::cout << "  ---------------------------------------------------------\n";
+    std::cout << "  Market Input |    XAD-Split |         JIT |      Diff |   Ratio | Status\n";
+    std::cout << "  -------------+-------------+-------------+-----------+---------+--------\n";
+    for (Size j = 0; j < curve.numMarketQuotes; ++j) {
+        double xs = xadsplit_final[j];
+        double jt = jit_final[j];
+        double diff = xs - jt;
+        double ratio = (std::abs(jt) > 1e-15) ? xs / jt : 0.0;
+        double relErr = (std::abs(jt) > 1e-15) ? std::abs(diff / jt) * 100.0 : 0.0;
+        std::string name = (j < config.numDeposits) ? "deposit[" + std::to_string(j) + "]"
+                                                     : "swap[" + std::to_string(j - config.numDeposits) + "]";
+        std::string status = (relErr < 0.1) ? "OK" : "FAIL";
+        std::cout << "  " << std::setw(12) << name << " | "
+                  << std::setw(11) << std::scientific << std::setprecision(4) << xs << " | "
+                  << std::setw(11) << jt << " | "
+                  << std::setw(9) << diff << " | "
+                  << std::fixed << std::setprecision(4) << ratio << " | "
+                  << status << "\n";
+    }
+    std::cout << "\n";
+
+    std::cout << "  Summary:\n";
+    std::cout << "    XAD-Split PV: " << xadsplit_mcPrice << "\n";
+    std::cout << "    JIT PV:       " << jit_mcPrice << "\n";
+    std::cout << "    PV Match:     " << (std::abs(xadsplit_mcPrice - jit_mcPrice) < 1e-10 ? "YES" : "NO") << "\n";
+    std::cout << "================================================================================\n\n";
 }
 
 // Phase 2: Record JIT graph for payoff (unified single/dual-curve)
@@ -1616,6 +1854,8 @@ int main(int argc, char* argv[])
     bool runAll = true;  // Default: run lite and lite-extended (not production)
     bool quickMode = false;
     bool xadOnly = false;
+    bool runDiagnose = false;
+    Size diagnosePaths = 100;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i)
@@ -1650,6 +1890,15 @@ int main(int argc, char* argv[])
         {
             xadOnly = true;
         }
+        else if (strcmp(argv[i], "--diagnose") == 0)
+        {
+            runDiagnose = true;
+            runAll = false;
+        }
+        else if (strncmp(argv[i], "--diagnose-paths=", 17) == 0)
+        {
+            diagnosePaths = static_cast<Size>(std::atoi(argv[i] + 17));
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             std::cout << "Usage: " << argv[0] << " [options]\n";
@@ -1660,6 +1909,8 @@ int main(int argc, char* argv[])
             std::cout << "  --all            Run all benchmarks including production\n";
             std::cout << "  --quick          Quick mode (fewer iterations)\n";
             std::cout << "  --xad-only       Run only XAD tape (no JIT)\n";
+            std::cout << "  --diagnose       Run diagnostic comparison of XAD-Split vs JIT\n";
+            std::cout << "  --diagnose-paths=N  Number of paths for diagnostic (default: 100)\n";
             std::cout << "  --help           Show this message\n";
             std::cout << "\n";
             std::cout << "Default: runs lite and lite-extended (not production)\n";
@@ -1677,6 +1928,33 @@ int main(int argc, char* argv[])
 
     printHeader();
     printEnvironment();
+
+#if defined(QLRISKS_HAS_FORGE)
+    // Run diagnostic comparison if requested
+    if (runDiagnose)
+    {
+        std::cout << "\nRunning XAD-Split vs JIT diagnostic comparison...\n";
+
+        // Lite config diagnostic
+        {
+            BenchmarkConfig liteConfig;
+            LMMSetup setup(liteConfig);
+            std::cout << "\n--- LITE CONFIG ---\n";
+            runDiagnosticComparison(liteConfig, setup, diagnosePaths);
+        }
+
+        // Lite-Extended config diagnostic
+        {
+            BenchmarkConfig liteExtConfig;
+            liteExtConfig.setLiteExtendedConfig();
+            LMMSetup setup(liteExtConfig);
+            std::cout << "\n--- LITE-EXTENDED CONFIG ---\n";
+            runDiagnosticComparison(liteExtConfig, setup, diagnosePaths);
+        }
+
+        return 0;
+    }
+#endif
 
     int benchmarkNum = 1;
 

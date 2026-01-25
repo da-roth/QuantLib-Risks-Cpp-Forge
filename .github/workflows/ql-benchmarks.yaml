@@ -166,6 +166,13 @@ jobs:
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
           ./QuantLib-Risks-Cpp/test-suite/benchmark-aad --all 2>&1 | tee forge_results.txt
 
+      - name: Run XAD-Split vs JIT Diagnostic
+        run: |
+          echo "===== DIAGNOSTIC: XAD-Split vs JIT Derivative Comparison ====="
+          cd QuantLib/build-forge
+          export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
+          ./QuantLib-Risks-Cpp/test-suite/benchmark-aad --diagnose --diagnose-paths=100 2>&1 | tee diagnostic_results.txt
+
       # =========================================================================
       # Benchmark 2: Plain double QuantLib (for FD benchmark)
       # =========================================================================
@@ -590,6 +597,15 @@ jobs:
           set PATH=%CD%\..\..\install\bin;%PATH%
           QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --all > forge_results.txt 2>&1
           type forge_results.txt
+
+      - name: Run XAD-Split vs JIT Diagnostic
+        shell: cmd
+        run: |
+          echo ===== DIAGNOSTIC: XAD-Split vs JIT Derivative Comparison =====
+          cd QuantLib\build-forge
+          set PATH=%CD%\..\..\install\bin;%PATH%
+          QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --diagnose --diagnose-paths=100 > diagnostic_results.txt 2>&1
+          type diagnostic_results.txt
 
       # =========================================================================
       # Benchmark 2: Plain double QuantLib (for FD benchmark)
