@@ -462,8 +462,24 @@ jobs:
 
                       print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
+          # Determine which methods are present across all configs
+          all_methods = set()
+          for config in configs:
+              if config in data:
+                  all_methods.update(data[config].keys())
+
           print("\nAll times in milliseconds (ms).")
-          print("*XAD-Split, JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
+          has_jit = 'JIT' in all_methods or 'JITAVX' in all_methods
+          has_xadsplit = 'XADSPLIT' in all_methods
+          if has_jit and has_xadsplit:
+              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above). XAD-Split avoids recording")
+              print(" all MC paths on a single tape by computing the Jacobian separately and re-recording a small")
+              print(" tape per path - no JIT compilation involved.")
+          elif has_xadsplit:
+              print("*XAD-Split avoids recording all MC paths on a single tape by computing the Jacobian separately")
+              print(" and re-recording a small tape per path.")
+          elif has_jit:
+              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above).")
           PYEOF
 
           python3 format_results.py \
@@ -861,8 +877,24 @@ jobs:
                           vs_xad, xad_maxdiff = '-', '-'
                       print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
+          # Determine which methods are present across all configs
+          all_methods = set()
+          for config in configs:
+              if config in data:
+                  all_methods.update(data[config].keys())
+
           print("\nAll times in milliseconds (ms).")
-          print("*XAD-Split, JIT and JIT-AVX2 times include one-time setup cost (see breakdown above).")
+          has_jit = 'JIT' in all_methods or 'JITAVX' in all_methods
+          has_xadsplit = 'XADSPLIT' in all_methods
+          if has_jit and has_xadsplit:
+              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above). XAD-Split avoids recording")
+              print(" all MC paths on a single tape by computing the Jacobian separately and re-recording a small")
+              print(" tape per path - no JIT compilation involved.")
+          elif has_xadsplit:
+              print("*XAD-Split avoids recording all MC paths on a single tape by computing the Jacobian separately")
+              print(" and re-recording a small tape per path.")
+          elif has_jit:
+              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above).")
           '@
 
           $script | Out-File -FilePath format_results.py -Encoding utf8
