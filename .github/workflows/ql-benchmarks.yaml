@@ -336,12 +336,17 @@ jobs:
           validation = defaultdict(dict)  # validation[config][method] = (pv, sens)
 
           for filepath in sys.argv[1:]:
+              # Skip XADSPLIT from forge_results.txt (use xad_results.txt instead for fair comparison)
+              is_forge_results = 'forge_results' in filepath
               try:
                   with open(filepath) as f:
                       for line in f:
                           result = parse_line(line)
                           if result:
                               method, config, results = result
+                              # Use XADSPLIT from xad_results.txt, not forge_results.txt
+                              if is_forge_results and method == 'XADSPLIT':
+                                  continue
                               for paths, vals in results.items():
                                   data[config][method][paths] = vals
                           phase_result = parse_phases_line(line)
@@ -472,8 +477,8 @@ jobs:
           echo "Raw data (for parsing):"
           echo ""
           grep -E "^(FD_|VALIDATE_)" QuantLib/build-double/fd_results.txt 2>/dev/null || true
-          grep -E "^(XAD_|VALIDATE_)" QuantLib/build-xad/xad_results.txt 2>/dev/null || true
-          grep -E "^(XAD_|JIT_|JITAVX_|JIT_PHASES_|VALIDATE_)" QuantLib/build-forge/forge_results.txt 2>/dev/null || true
+          grep -E "^(XAD_|XADSPLIT_|VALIDATE_)" QuantLib/build-xad/xad_results.txt 2>/dev/null || true
+          grep -E "^(JIT_|JITAVX_|JIT_PHASES_|VALIDATE_)" QuantLib/build-forge/forge_results.txt 2>/dev/null || true
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -764,12 +769,16 @@ jobs:
           phases = {}
           validation = defaultdict(dict)
           for filepath in sys.argv[1:]:
+              # Skip XADSPLIT from forge_results.txt (use xad_results.txt instead)
+              is_forge_results = 'forge_results' in filepath
               try:
                   with open(filepath) as f:
                       for line in f:
                           result = parse_line(line)
                           if result:
                               method, config, results = result
+                              if is_forge_results and method == 'XADSPLIT':
+                                  continue
                               for paths, vals in results.items():
                                   data[config][method][paths] = vals
                           phase_result = parse_phases_line(line)

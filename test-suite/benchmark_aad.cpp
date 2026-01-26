@@ -151,10 +151,8 @@ inline void runXADBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSet
     runXADBenchmarkT<true>(config, setup, nrTrails, warmup, bench, mean, stddev, validation);
 }
 
-#if defined(QLRISKS_HAS_FORGE)
-
 // ============================================================================
-// Chain Rule Helper
+// Chain Rule Helper (used by XAD-Split and JIT methods)
 // ============================================================================
 
 inline void applyChainRule(const double* __restrict jacobian,
@@ -836,6 +834,8 @@ void runXADSplitBenchmarkDualCurve(const BenchmarkConfig& config, const LMMSetup
     stddev = computeStddev(times);
     fixed_cost_mean = computeMean(fixed_times);
 }
+
+#if defined(QLRISKS_HAS_FORGE)
 
 // ============================================================================
 // Forward declaration for recordJITGraph (defined later)
@@ -1709,10 +1709,8 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
         result.xad_enabled = true;
         std::cout << "XAD=" << std::fixed << std::setprecision(1) << result.xad_mean << "ms ";
 
-#if defined(QLRISKS_HAS_FORGE)
-        if (!xadOnly)
+        // XAD-Split (Jacobian + tape MC on intermediates + chain rule)
         {
-            // XAD-Split (Jacobian + tape MC on intermediates + chain rule)
             double xad_split_fixed = 0;
             runXADSplitBenchmark(config, setup, nrTrails, warmup, bench,
                                  result.xad_split_mean, result.xad_split_std, xad_split_fixed,
@@ -1720,7 +1718,11 @@ std::vector<TimingResult> runAADBenchmark(const BenchmarkConfig& config,
             result.xad_split_enabled = true;
             result.xad_split_fixed_mean = xad_split_fixed;
             std::cout << "XAD-Split=" << result.xad_split_mean << "ms ";
+        }
 
+#if defined(QLRISKS_HAS_FORGE)
+        if (!xadOnly)
+        {
             // Forge JIT
             runJITBenchmark(config, setup, nrTrails, warmup, bench,
                             result.jit_mean, result.jit_std,
@@ -1803,10 +1805,8 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
         result.xad_enabled = true;
         std::cout << "XAD=" << std::fixed << std::setprecision(1) << result.xad_mean << "ms ";
 
-#if defined(QLRISKS_HAS_FORGE)
-        if (!xadOnly)
+        // XAD-Split (dual-curve)
         {
-            // XAD-Split (dual-curve)
             double xad_split_fixed = 0;
             runXADSplitBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
                                            result.xad_split_mean, result.xad_split_std, xad_split_fixed,
@@ -1814,7 +1814,11 @@ std::vector<TimingResult> runAADBenchmarkDualCurve(const BenchmarkConfig& config
             result.xad_split_enabled = true;
             result.xad_split_fixed_mean = xad_split_fixed;
             std::cout << "XAD-Split=" << result.xad_split_mean << "ms ";
+        }
 
+#if defined(QLRISKS_HAS_FORGE)
+        if (!xadOnly)
+        {
             // Forge JIT (dual-curve)
             double jit_p1 = 0, jit_p2 = 0, jit_p3 = 0;
             runJITBenchmarkDualCurve(config, setup, nrTrails, warmup, bench,
@@ -1867,7 +1871,6 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
     }
     std::cout << std::endl;
 
-#if defined(QLRISKS_HAS_FORGE)
     // XAD-Split results (includes fixed cost: mean,std,enabled,fixed_cost)
     std::cout << "XADSPLIT_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
@@ -1880,6 +1883,7 @@ void outputResultsForParsing(const std::vector<TimingResult>& results,
     }
     std::cout << std::endl;
 
+#if defined(QLRISKS_HAS_FORGE)
     // JIT results (now includes fixed cost: mean,std,enabled,fixed_cost)
     std::cout << "JIT_" << configId << ":";
     for (size_t i = 0; i < results.size(); ++i)
