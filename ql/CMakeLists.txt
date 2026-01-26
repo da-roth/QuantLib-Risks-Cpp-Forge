@@ -33,11 +33,10 @@ target_include_directories(QuantLib-Risks INTERFACE
 target_compile_features(QuantLib-Risks INTERFACE cxx_std_14)
 if(NOT QLRISKS_DISABLE_AAD)
     target_compile_definitions(QuantLib-Risks INTERFACE QL_INCLUDE_FIRST=ql/qlrisks.hpp)
-    target_link_libraries(QuantLib-Risks INTERFACE XAD::xad)
 else()
     target_compile_definitions(QuantLib-Risks INTERFACE QLRISKS_DISABLE_AAD=1)
-    # When AAD is disabled, don't link XAD - use plain double QuantLib
 endif()
+target_link_libraries(QuantLib-Risks INTERFACE XAD::xad)
 if(MSVC)
     target_compile_options(QuantLib-Risks INTERFACE /bigobj)
 endif()
