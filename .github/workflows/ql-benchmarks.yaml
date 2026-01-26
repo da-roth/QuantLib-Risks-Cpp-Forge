@@ -368,8 +368,8 @@ jobs:
               'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'
           }
 
-          # Column display names (JIT/XAD-Split columns have asterisk to indicate setup cost)
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          # Column display names (asterisk indicates methods with setup cost)
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'Forge*', 'JITAVX': 'Forge-AVX2*'}
           col_width = 12  # Width for each numeric column
 
           for config in configs:
@@ -411,7 +411,7 @@ jobs:
               if config in phases:
                   p = phases[config]
                   total = p['phase1'] + p['phase2'] + p['phase3']
-                  print(f"\n*JIT timing breakdown (one-time costs, independent of paths):\n")
+                  print(f"\n*Forge JIT setup (one-time costs, independent of paths):\n")
                   print(f"  {'Phase':<35} {'Time (ms)':>10}")
                   print(f"  {'-'*45}")
                   print(f"  {'1. Curve bootstrap (XAD)':<35} {format_num(p['phase1']):>10}")
@@ -472,14 +472,15 @@ jobs:
           has_jit = 'JIT' in all_methods or 'JITAVX' in all_methods
           has_xadsplit = 'XADSPLIT' in all_methods
           if has_jit and has_xadsplit:
-              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above). XAD-Split avoids recording")
-              print(" all MC paths on a single tape by computing the Jacobian separately and re-recording a small")
-              print(" tape per path - no JIT compilation involved.")
+              print("*Forge uses the Forge JIT compiler to generate native code (scalar, 1 path at a time).")
+              print(" Forge-AVX2 uses AVX2 vectorization (4 paths at a time). See setup breakdown above.")
+              print(" XAD-Split computes Jacobian separately and re-records a small tape per path (no JIT).")
           elif has_xadsplit:
-              print("*XAD-Split avoids recording all MC paths on a single tape by computing the Jacobian separately")
-              print(" and re-recording a small tape per path.")
+              print("*XAD-Split computes the Jacobian separately and re-records a small tape per path,")
+              print(" avoiding one large tape that records all MC paths.")
           elif has_jit:
-              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above).")
+              print("*Forge uses the Forge JIT compiler (scalar, 1 path at a time).")
+              print(" Forge-AVX2 uses AVX2 vectorization (4 paths at a time). See setup breakdown above.")
           PYEOF
 
           python3 format_results.py \
@@ -809,7 +810,7 @@ jobs:
 
           configs = ['LITE', 'LITEEXT', 'PRODUCTION']
           names = {'LITE': 'Lite (1Y×1Y, 9 inputs)', 'LITEEXT': 'Lite-Extended (5Y×5Y, 14 inputs)', 'PRODUCTION': 'Production (5Y×5Y dual-curve, 45 inputs)'}
-          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'JIT*', 'JITAVX': 'JIT-AVX2*'}
+          method_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split*', 'JIT': 'Forge*', 'JITAVX': 'Forge-AVX2*'}
           col_width = 12
 
           for config in configs:
@@ -841,7 +842,7 @@ jobs:
               if config in phases:
                   p = phases[config]
                   total = p['phase1'] + p['phase2'] + p['phase3']
-                  print(f"\n*JIT timing breakdown (one-time costs, independent of paths):\n")
+                  print(f"\n*Forge JIT setup (one-time costs, independent of paths):\n")
                   print(f"  {'Phase':<35} {'Time (ms)':>10}")
                   print(f"  {'-'*45}")
                   print(f"  {'1. Curve bootstrap (XAD)':<35} {format_num(p['phase1']):>10}")
@@ -887,14 +888,15 @@ jobs:
           has_jit = 'JIT' in all_methods or 'JITAVX' in all_methods
           has_xadsplit = 'XADSPLIT' in all_methods
           if has_jit and has_xadsplit:
-              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above). XAD-Split avoids recording")
-              print(" all MC paths on a single tape by computing the Jacobian separately and re-recording a small")
-              print(" tape per path - no JIT compilation involved.")
+              print("*Forge uses the Forge JIT compiler to generate native code (scalar, 1 path at a time).")
+              print(" Forge-AVX2 uses AVX2 vectorization (4 paths at a time). See setup breakdown above.")
+              print(" XAD-Split computes Jacobian separately and re-records a small tape per path (no JIT).")
           elif has_xadsplit:
-              print("*XAD-Split avoids recording all MC paths on a single tape by computing the Jacobian separately")
-              print(" and re-recording a small tape per path.")
+              print("*XAD-Split computes the Jacobian separately and re-records a small tape per path,")
+              print(" avoiding one large tape that records all MC paths.")
           elif has_jit:
-              print("*JIT and JIT-AVX2 include one-time setup cost (see breakdown above).")
+              print("*Forge uses the Forge JIT compiler (scalar, 1 path at a time).")
+              print(" Forge-AVX2 uses AVX2 vectorization (4 paths at a time). See setup breakdown above.")
           '@
 
           $script | Out-File -FilePath format_results.py -Encoding utf8
