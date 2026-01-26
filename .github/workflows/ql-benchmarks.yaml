@@ -168,7 +168,7 @@ jobs:
 
       - name: Run XAD-Split vs JIT Diagnostic
         run: |
-          echo "===== DIAGNOSTIC: XAD-Split vs JIT Derivative Comparison ====="
+          echo "===== DIAGNOSTIC: XAD-Split vs Forge Derivative Comparison ====="
           cd QuantLib/build-forge
           export LD_LIBRARY_PATH=$(pwd)/../../install/lib:$LD_LIBRARY_PATH
           ./QuantLib-Risks-Cpp/test-suite/benchmark-aad --diagnose --diagnose-paths=100 2>&1 | tee diagnostic_results.txt
@@ -229,7 +229,7 @@ jobs:
 
       - name: Run XAD Benchmark (JIT off)
         run: |
-          echo "===== XAD BENCHMARK (XAD tape, JIT disabled) ====="
+          echo "===== XAD BENCHMARK (XAD + XAD-Split, JIT disabled) ====="
           cd QuantLib/build-xad
           ./QuantLib-Risks-Cpp/test-suite/benchmark-aad --all --xad-only 2>&1 | tee xad_results.txt
 
@@ -431,6 +431,9 @@ jobs:
                   fd_sens = val_methods.get('FD', (None, []))[1]
                   xad_sens = val_methods.get('XAD', (None, []))[1]
 
+                  # Display names for validation table (without asterisk)
+                  val_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split', 'JIT': 'Forge', 'JITAVX': 'Forge-AVX2'}
+
                   for m in method_order:
                       if m not in val_methods:
                           continue
@@ -460,7 +463,7 @@ jobs:
                           vs_xad = '-'
                           xad_maxdiff = '-'
 
-                      print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
+                      print(f"  {val_display[m]:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
           # Determine which methods are present across all configs
           all_methods = set()
@@ -623,7 +626,7 @@ jobs:
       - name: Run XAD-Split vs JIT Diagnostic
         shell: cmd
         run: |
-          echo ===== DIAGNOSTIC: XAD-Split vs JIT Derivative Comparison =====
+          echo ===== DIAGNOSTIC: XAD-Split vs Forge Derivative Comparison =====
           cd QuantLib\build-forge
           set PATH=%CD%\..\..\install\bin;%PATH%
           QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --diagnose --diagnose-paths=100 > diagnostic_results.txt 2>&1
@@ -695,7 +698,7 @@ jobs:
       - name: Run XAD Benchmark (JIT off)
         shell: cmd
         run: |
-          echo ===== XAD BENCHMARK (XAD tape, JIT disabled) =====
+          echo ===== XAD BENCHMARK (XAD + XAD-Split, JIT disabled) =====
           cd QuantLib\build-xad
           QuantLib-Risks-Cpp\test-suite\benchmark-aad.exe --all --xad-only > xad_results.txt 2>&1
           type xad_results.txt
@@ -857,6 +860,7 @@ jobs:
                   print(f"  {'Method':<10} {'PV':>14} {'Sens':>6} {'vs FD':>8} {'FD MaxDiff':>12} {'vs XAD':>8} {'XAD MaxDiff':>12}")
                   print(f"  {'-'*72}")
                   method_order = ['FD', 'XAD', 'XADSPLIT', 'JIT', 'JITAVX']
+                  val_display = {'FD': 'FD', 'XAD': 'XAD', 'XADSPLIT': 'XAD-Split', 'JIT': 'Forge', 'JITAVX': 'Forge-AVX2'}
                   fd_sens = val_methods.get('FD', (None, []))[1]
                   xad_sens = val_methods.get('XAD', (None, []))[1]
                   for m in method_order:
@@ -876,7 +880,7 @@ jobs:
                           vs_xad, xad_maxdiff = f"{match}/{total}", f"{maxd:.4f}%"
                       else:
                           vs_xad, xad_maxdiff = '-', '-'
-                      print(f"  {m:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
+                      print(f"  {val_display[m]:<10} {pv:>14.6f} {len(sens):>6} {vs_fd:>8} {fd_maxdiff:>12} {vs_xad:>8} {xad_maxdiff:>12}")
 
           # Determine which methods are present across all configs
           all_methods = set()
