@@ -86,8 +86,6 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
 
-    name: Linux XAD C++${{ matrix.cxx }} AAD=${{ matrix.disable_aad == 'OFF' && 'ON' || 'OFF' }}
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,8 +183,6 @@ jobs:
         disable_aad: ["ON", "OFF"]
         cxx: ["17", "20"]
     runs-on: windows-2022
-
-    name: Windows XAD C++${{ matrix.cxx }} AAD=${{ matrix.disable_aad == 'OFF' && 'ON' || 'OFF' }}
 
     env:
       vsvarsall: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
@@ -304,8 +300,6 @@ jobs:
         cxx: ["17", "20"]
     runs-on: macos-latest
 
-    name: macOS XAD C++${{ matrix.cxx }} AAD=${{ matrix.disable_aad == 'OFF' && 'ON' || 'OFF' }}
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -399,8 +393,6 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
 
-    name: Linux XAD std-classes
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -472,8 +464,6 @@ jobs:
         cxx: ["17", "20"]
     runs-on: ubuntu-latest
     container: ghcr.io/lballabio/quantlib-devenv:rolling
-
-    name: Linux Forge C++${{ matrix.cxx }} ${{ matrix.build_type }}
 
     steps:
       - name: Checkout QuantLib
@@ -579,8 +569,6 @@ jobs:
         build_type: ["Release", "Debug"]
         cxx: ["17", "20"]
     runs-on: windows-2022
-
-    name: Windows Forge C++${{ matrix.cxx }} ${{ matrix.build_type }}
 
     env:
       VSVARSALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
